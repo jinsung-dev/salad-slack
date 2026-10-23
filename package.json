@@ -1,0 +1,23 @@
+{
+  "name": "chatter",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.0.9",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "db:generate": "pnpm --filter @chatter/server db:generate",
+    "dev": "pnpm --parallel --filter @chatter/server --filter @chatter/web dev",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "test:e2e": "playwright test",
+    "build": "pnpm --filter @chatter/web build",
+    "start": "pnpm build && pnpm --filter @chatter/server start"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1"
+  }
+}
