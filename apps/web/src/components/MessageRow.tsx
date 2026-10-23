@@ -1,11 +1,12 @@
 import { useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Message } from "@chatter/shared";
 import { api } from "../api";
-import { replaceMessage, updateMessage } from "../cache";
+import { keys, replaceMessage, updateMessage } from "../cache";
 import { nameOf, toDisplay, toTokens, useDirectory, type MentionMap } from "../directory";
 import { Markdown } from "../markdown";
 import { MentionTextarea } from "./MentionTextarea";
+import { MessageFiles } from "./Files";
 import { Avatar } from "./People";
 
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
@@ -32,6 +33,7 @@ export function MessageRow({
   const { names } = useDirectory();
   const [editing, setEditing] = useState(false);
   const [picking, setPicking] = useState(false);
+  const saved = useQuery({ queryKey: keys.saved, queryFn: api.saved }).data?.messages.some((m) => m.id === message.id) ?? false;
 
   const at = new Date(message.createdAt);
   const prevAt = previous ? new Date(previous.createdAt) : undefined;
@@ -49,6 +51,11 @@ export function MessageRow({
     const has = message.reactions.some((r) => r.emoji === emoji && r.userIds.includes(me));
     const reactions = await api.react(message.id, emoji, !has);
     updateMessage(qc, message.channelId, message.id, (m) => ({ ...m, reactions }));
+  };
+
+  const toggleSaved = async () => {
+    await api.setSaved(message.id, !saved);
+    void qc.invalidateQueries({ queryKey: keys.saved });
   };
 
   const remove = async () => {
@@ -84,10 +91,15 @@ export function MessageRow({
           ) : editing ? (
             <EditBox message={message} onDone={() => setEditing(false)} />
           ) : (
-            <div className="text">
-              <Markdown text={message.text} names={names} me={me} />
-              {message.editedAt && <span className="edited muted"> (수정됨)</span>}
-            </div>
+            <>
+              {message.text && (
+                <div className="text">
+                  <Markdown text={message.text} names={names} me={me} />
+                  {message.editedAt && <span className="edited muted"> (수정됨)</span>}
+                </div>
+              )}
+              <MessageFiles files={message.files} />
+            </>
           )}
           {message.reactions.length > 0 && (
             <div className="reactions">
@@ -120,6 +132,9 @@ export function MessageRow({
           <div className="actions" role="toolbar" aria-label="메시지 동작">
             <button title="반응 추가" aria-label="반응 추가" onClick={() => setPicking((p) => !p)}>
               ☺
+            </button>
+            <button title={saved ? "저장 취소" : "저장"} aria-label={saved ? "저장 취소" : "저장"} aria-pressed={saved} onClick={() => void toggleSaved()}>
+              {saved ? "🔖" : "📑"}
             </button>
             {onOpenThread && message.parentId === null && (
               <button title="스레드에 답글" aria-label="스레드에 답글" onClick={() => onOpenThread(message.id)}>

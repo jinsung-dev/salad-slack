@@ -78,7 +78,8 @@ a.button.google:hover { background: var(--hover); }
 .new-channel input { background: #ffffff10; border-color: #ffffff20; }
 .new-channel .row { display: flex; gap: 10px; align-items: center; }
 .sidebar-footer { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-top: 1px solid #ffffff14; }
-.sidebar-footer .me { flex: 1; color: #fff; }
+.sidebar-footer .me { flex: 1; min-width: 0; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-footer button { white-space: nowrap; }
 
 /* Channel */
 .channel { display: flex; flex-direction: column; height: 100%; }
@@ -193,3 +194,46 @@ button.secondary:hover { background: var(--hover); }
 .picker-list { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow-y: auto; }
 .picker-list label { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-radius: 6px; cursor: pointer; }
 .picker-list label:hover { background: var(--hover); }
+
+/* Phase 3 */
+.header-actions { display: flex; align-items: center; gap: 8px; }
+.notify-select { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.notify-select select, .search-form select { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); }
+.channel-link.muted-channel { opacity: 0.55; }
+.channel-link.muted-channel.unread { opacity: 1; }
+
+.search-box { padding: 8px 8px 0; }
+.search-box input { width: 100%; background: #ffffff14; border-color: #ffffff1f; color: #fff; padding: 6px 10px; }
+.search-box input::placeholder { color: #ffffff80; }
+.search-form { display: flex; gap: 8px; flex-wrap: wrap; }
+.search-form input { flex: 1 1 220px; }
+.search-results { padding: 8px 12px; }
+.search-result { display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left; background: none; color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.search-result:hover { background: var(--hover); }
+.result-where { font-size: 12px; }
+.result-body { display: flex; gap: 8px; align-items: flex-start; line-height: 1.5; overflow-wrap: anywhere; }
+.search-result mark { background: #fde68a; color: inherit; border-radius: 2px; }
+.empty-note { padding: 24px 8px; }
+button.more { display: block; margin: 8px auto; }
+
+.composer.dragging { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.attachments { list-style: none; margin: 0; padding: 8px 8px 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.attachment { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; max-width: 260px; font-size: 13px; }
+.attachment img { width: 36px; height: 36px; object-fit: cover; border-radius: 4px; }
+.attachment.error { border-color: var(--danger); }
+.attachment-name { display: flex; flex-direction: column; min-width: 0; }
+.attachment-name, .attachment-name small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-icon { font-size: 20px; }
+button.icon { background: none; color: var(--fg); padding: 2px 6px; font-size: 16px; }
+.composer-footer .row { display: flex; align-items: center; gap: 6px; }
+.message-files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.file-image img { display: block; max-width: 360px; max-height: 240px; border-radius: 8px; border: 1px solid var(--border); }
+.file-card { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--fg); text-decoration: none; max-width: 320px; }
+.file-card:hover { background: var(--hover); }
+.file-meta { display: flex; flex-direction: column; min-width: 0; }
+.file-meta strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.setting { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; border-top: 1px solid var(--border); }
+.setting h3 { margin: 0; font-size: 15px; }
+.setting p { margin: 0; }
+.setting .row { display: flex; align-items: center; gap: 8px; }

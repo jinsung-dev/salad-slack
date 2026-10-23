@@ -17,6 +17,7 @@ const msg = (id: number, extra: Partial<Message> = {}): Message => ({
   mentions: [],
   mentionsChannel: false,
   reactions: [],
+  files: [],
   thread: null,
   ...extra,
 });
@@ -60,7 +61,7 @@ describe("message cache", () => {
 
 describe("channel cache", () => {
   const summary: ChannelSummary = { id: "c1", kind: "public", name: "general", topic: "", memberIds: null };
-  const created: Channel = { ...summary, isMember: true, unreadCount: 0, mentionCount: 0 };
+  const created: Channel = { ...summary, isMember: true, unreadCount: 0, mentionCount: 0, notify: "mentions" };
 
   it("keeps the creator's membership whichever of the event and the response arrives first", () => {
     for (const apply of [

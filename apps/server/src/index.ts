@@ -2,6 +2,7 @@ import { buildApp } from "./app";
 import { createDb, runMigrations } from "./db/client";
 import { env } from "./env";
 import type { OidcConfig } from "./oidc";
+import { webPushSender } from "./webPush";
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -35,6 +36,9 @@ const app = await buildApp({
   allowedEmailDomains: env.allowedEmailDomains,
   authRateLimit: env.authRateLimit,
   webDist: env.webDist,
+  fileStorageDir: env.fileStorageDir,
+  maxFileBytes: env.maxFileBytes,
+  push: env.vapid ? { publicKey: env.vapid.publicKey, send: webPushSender(env.vapid) } : null,
   trustProxy: env.trustProxy,
 });
 
@@ -50,4 +54,5 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 await app.listen({ port: env.port, host: env.host });
 if (provider.close) app.log.warn(`development sign-in: fake provider at ${provider.config.issuer}, any email is accepted`);
 else app.log.info(`sign-in via ${provider.config.issuer}`);
+app.log.info(env.vapid ? "web push enabled" : "web push disabled: set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY");
 if (env.allowedEmailDomains.length > 0) app.log.info(`sign-in limited to ${env.allowedEmailDomains.join(", ")}`);

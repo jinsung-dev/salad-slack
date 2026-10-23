@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, expect } from "vitest";
 import { sql } from "drizzle-orm";
 import { WebSocket } from "ws";
@@ -14,13 +17,18 @@ const REDIS_URL = process.env.TEST_REDIS_URL ?? "redis://localhost:56379";
  * Starts `nodes` server instances sharing one fresh database and one Redis
  * namespace, like a horizontally scaled deployment. Call at module scope.
  */
-export function useCluster(nodes = 1, options: Partial<Pick<Parameters<typeof buildApp>[0], "allowedEmailDomains" | "authRateLimit" | "webDist">> = {}) {
+export function useCluster(
+  nodes = 1,
+  options: Partial<Pick<Parameters<typeof buildApp>[0], "allowedEmailDomains" | "authRateLimit" | "webDist" | "maxFileBytes" | "push">> = {},
+) {
   const { db, pool } = createDb(DATABASE_URL);
   const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
   const urls: string[] = [];
   // Unique per run so a dev server on the same Redis never sees test traffic.
   const redisPrefix = `chatter-test-${randomUUID()}:`;
   let oidc: FakeOidc | undefined;
+  // Shared by every node, like the one disk of a single-server deployment.
+  const fileStorageDir = mkdtempSync(join(tmpdir(), "chatter-files-"));
 
   beforeAll(async () => {
     await db.execute(sql`drop schema if exists public cascade; drop schema if exists drizzle cascade; create schema public;`);
@@ -36,6 +44,7 @@ export function useCluster(nodes = 1, options: Partial<Pick<Parameters<typeof bu
         logger: false,
         // Tests sign in many users from one address.
         authRateLimit: 10_000,
+        fileStorageDir,
         ...options,
       });
       apps.push(app);
@@ -49,7 +58,7 @@ export function useCluster(nodes = 1, options: Partial<Pick<Parameters<typeof bu
     await pool.end();
   });
 
-  return { urls, db };
+  return { urls, db, fileStorageDir };
 }
 
 const cookieValue = (res: Response, name: string) =>

@@ -1,12 +1,16 @@
 import type {
   Channel,
   CreateChannelInput,
+  FileRef,
   Member,
   Message,
   MessagePage,
+  NotifyLevel,
   PostMessageInput,
+  Preferences,
   PresenceMap,
   Reaction,
+  SearchQuery,
   User,
 } from "@chatter/shared";
 
@@ -27,11 +31,12 @@ export function handleUnauthorized(handler: () => void) {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const isForm = body instanceof FormData;
   const res = await fetch(path, {
     method,
     credentials: "same-origin",
-    headers: body === undefined ? {} : { "content-type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    headers: body === undefined || isForm ? {} : { "content-type": "application/json" },
+    body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
   });
   if (res.status === 204) return undefined as T;
   const data = await res.json().catch(() => ({}));
@@ -67,6 +72,24 @@ export const api = {
   markThreadRead: (id: number) => request<void>("POST", `/api/messages/${id}/thread/read`),
   editMessage: (id: number, text: string) => request<Message>("PATCH", `/api/messages/${id}`, { text }),
   deleteMessage: (id: number) => request<void>("DELETE", `/api/messages/${id}`),
+  uploadFile: (channelId: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    return request<FileRef>("POST", `/api/channels/${channelId}/files`, form);
+  },
+  search: (query: SearchQuery) => {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(query)) if (v !== undefined && v !== "") params.set(k, String(v));
+    return request<MessagePage>("GET", `/api/search?${params}`);
+  },
+  setNotify: (channelId: string, level: NotifyLevel) => request<void>("PUT", `/api/channels/${channelId}/notify`, { level }),
+  preferences: () => request<Preferences>("GET", "/api/me/preferences"),
+  savePreferences: (prefs: Preferences) => request<void>("PUT", "/api/me/preferences", prefs),
+  pushKey: () => request<{ publicKey: string }>("GET", "/api/push/key"),
+  subscribePush: (sub: PushSubscriptionJSON) => request<void>("POST", "/api/push/subscriptions", sub),
+  unsubscribePush: (endpoint: string) => request<void>("DELETE", "/api/push/subscriptions", { endpoint }),
+  saved: () => request<MessagePage>("GET", "/api/saved"),
+  setSaved: (id: number, saved: boolean) => request<void>(saved ? "PUT" : "DELETE", `/api/messages/${id}/save`),
   react: (id: number, emoji: string, add: boolean) =>
     request<Reaction[]>(add ? "PUT" : "DELETE", `/api/messages/${id}/reactions/${encodeURIComponent(emoji)}`),
 };

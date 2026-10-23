@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { and, desc, eq, isNull, lt, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 import {
   channelParams,
   editMessageInput,
@@ -11,12 +11,16 @@ import {
   type MessagePage,
 } from "@chatter/shared";
 import type { AppDeps } from "../app";
-import { channelMembers, mentions, messages, reactions } from "../db/schema";
+import { channelMembers, files, mentions, messages, reactions } from "../db/schema";
+import { notifyNewMessage } from "../notify";
 import { channelAccess, loadMessage, loadMessages, memberIds } from "../queries";
 
 type MessageRow = typeof messages.$inferSelect;
 
-export async function messageRoutes(app: FastifyInstance, { db, hub }: AppDeps) {
+/** Thrown inside a send transaction to roll it back when an attachment is not the sender's to attach. */
+class InvalidFiles extends Error {}
+
+export async function messageRoutes(app: FastifyInstance, { db, hub, fileStore, push }: AppDeps) {
   app.addHook("preHandler", async (req, reply) => {
     if (!req.user) return reply.code(401).send({ error: "unauthenticated" });
   });
@@ -58,7 +62,7 @@ export async function messageRoutes(app: FastifyInstance, { db, hub }: AppDeps) 
     const members = await memberIds(db, id);
     const mention = mentionTargets(input.text, members, me);
 
-    const result = await db.transaction(async (tx) => {
+    const send = db.transaction(async (tx) => {
       let parent: MessageRow | undefined;
       if (input.parentId !== undefined) {
         [parent] = await tx.select().from(messages).where(eq(messages.id, input.parentId)).for("update");
@@ -82,6 +86,15 @@ export async function messageRoutes(app: FastifyInstance, { db, hub }: AppDeps) 
       if (mention.targets.length > 0) {
         await tx.insert(mentions).values(mention.targets.map((userId) => ({ messageId: inserted.id, userId, channelId: id })));
       }
+      if (input.fileIds.length > 0) {
+        // Only the sender's own unattached uploads to this conversation.
+        const attached = await tx
+          .update(files)
+          .set({ messageId: inserted.id })
+          .where(and(inArray(files.id, input.fileIds), eq(files.uploaderId, me), eq(files.channelId, id), isNull(files.messageId)))
+          .returning({ id: files.id });
+        if (attached.length !== new Set(input.fileIds).size) throw new InvalidFiles();
+      }
       if (parent) {
         await tx
           .update(messages)
@@ -97,6 +110,13 @@ export async function messageRoutes(app: FastifyInstance, { db, hub }: AppDeps) 
       return inserted.id;
     });
 
+    let result: Awaited<typeof send>;
+    try {
+      result = await send;
+    } catch (err) {
+      if (err instanceof InvalidFiles) return reply.code(400).send({ error: "invalid_files" });
+      throw err;
+    }
     if (result === "invalid_parent") return reply.code(400).send({ error: "invalid_parent" });
     if (result === "duplicate") {
       // Retry of an already-accepted send: return the original, do not re-broadcast.
@@ -111,6 +131,8 @@ export async function messageRoutes(app: FastifyInstance, { db, hub }: AppDeps) 
     const message = (await loadMessage(db, result))!;
     hub.publish({ users: members }, { type: "message.created", message });
     if (message.parentId !== null) await publishUpdated(message.parentId, members);
+    // Off the response path: a slow push service never delays the sender.
+    if (push) void notifyNewMessage(db, hub, push.send, message).catch((err) => req.log.error({ err }, "push notification failed"));
     return reply.code(201).send(message);
   });
 
@@ -186,10 +208,12 @@ export async function messageRoutes(app: FastifyInstance, { db, hub }: AppDeps) 
     if (found.row.deletedAt) return reply.code(204).send();
 
     const parentId = found.row.parentId;
+    let removedFiles: string[] = [];
     const parentGone = await db.transaction(async (tx) => {
       await tx.update(messages).set({ deletedAt: sql`now()`, text: "", mentionsChannel: false }).where(eq(messages.id, id));
       await tx.delete(mentions).where(eq(mentions.messageId, id));
       await tx.delete(reactions).where(eq(reactions.messageId, id));
+      removedFiles = (await tx.delete(files).where(eq(files.messageId, id)).returning({ key: files.storageKey })).map((f) => f.key);
       if (parentId === null) return false;
       const [parent] = await tx
         .update(messages)
@@ -201,6 +225,7 @@ export async function messageRoutes(app: FastifyInstance, { db, hub }: AppDeps) 
         .returning({ replyCount: messages.replyCount, deletedAt: messages.deletedAt });
       return parent!.replyCount === 0 && parent!.deletedAt !== null;
     });
+    await fileStore.remove(removedFiles);
 
     const members = await memberIds(db, found.row.channelId);
     const channelId = found.row.channelId;

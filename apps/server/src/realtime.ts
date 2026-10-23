@@ -13,13 +13,15 @@ type WireTarget = { users: string[] } | { all: true; except: string[] };
 interface SocketState {
   userId: string;
   active: boolean;
+  /** The tab is visible and focused; unknown until the client says. */
+  focused: boolean;
   alive: boolean;
 }
 
-export type ClientEventHandler = (userId: string, event: Exclude<ClientEvent, { type: "presence" }>) => void;
+export type ClientEventHandler = (userId: string, event: Extract<ClientEvent, { type: "typing" }>) => void;
 
 /**
- * Cluster-wide fan-out of server events plus presence.
+ * Cluster-wide fan-out of server events plus presence and tab focus.
  *
  * Every node publishes events to one Redis channel and delivers the ones
  * addressed to its own sockets, so a send reaches users on any node. Presence
@@ -62,7 +64,7 @@ export class RealtimeHub {
   }
 
   add(userId: string, socket: WebSocket): void {
-    const state: SocketState = { userId, active: true, alive: true };
+    const state: SocketState = { userId, active: true, focused: false, alive: true };
     this.sockets.set(socket, state);
     socket.on("pong", () => (state.alive = true));
     socket.on("message", (raw) => this.receive(state, String(raw)));
@@ -85,12 +87,23 @@ export class RealtimeHub {
     const result: PresenceMap = {};
     for (const hash of await this.nodeHashes()) {
       for (const [field, count] of Object.entries(hash)) {
-        if (field.startsWith("a:") || Number(count) <= 0) continue;
+        if (field.includes(":") || Number(count) <= 0) continue;
         const active = Number(hash[`a:${field}`] ?? 0) > 0;
         if (active || result[field] === undefined) result[field] = active ? "active" : "away";
       }
     }
     return result;
+  }
+
+  /** Users with a focused tab on any node: they are looking at Chatter. */
+  async focusedUsers(): Promise<Set<string>> {
+    const focused = new Set<string>();
+    for (const hash of await this.nodeHashes()) {
+      for (const [field, count] of Object.entries(hash)) {
+        if (field.startsWith("f:") && Number(count) > 0) focused.add(field.slice(2));
+      }
+    }
+    return focused;
   }
 
   async close(): Promise<void> {
@@ -109,6 +122,12 @@ export class RealtimeHub {
       if (!result.success) return;
       parsed = result.data;
     } catch {
+      return;
+    }
+    if (parsed.type === "focus") {
+      if (state.focused === parsed.focused) return;
+      state.focused = parsed.focused;
+      void this.syncPresence().catch((err) => this.log("focus update failed", err));
       return;
     }
     if (parsed.type === "presence") {
@@ -144,9 +163,11 @@ export class RealtimeHub {
   /** Local sockets are the truth for this node; rewrite its hash whole. */
   private async syncPresence() {
     const counts = new Map<string, number>();
-    for (const { userId, active } of this.sockets.values()) {
-      counts.set(userId, (counts.get(userId) ?? 0) + 1);
-      if (active) counts.set(`a:${userId}`, (counts.get(`a:${userId}`) ?? 0) + 1);
+    const bump = (key: string) => counts.set(key, (counts.get(key) ?? 0) + 1);
+    for (const { userId, active, focused } of this.sockets.values()) {
+      bump(userId);
+      if (active) bump(`a:${userId}`);
+      if (focused) bump(`f:${userId}`);
     }
     const tx = this.pub.multi().del(this.nodeKey);
     if (counts.size > 0) tx.hset(this.nodeKey, Object.fromEntries(counts)).expire(this.nodeKey, PRESENCE_TTL_S);

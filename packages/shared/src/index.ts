@@ -34,15 +34,23 @@ export const inviteInput = z.object({
 
 export const messageText = z.string().trim().min(1).max(4000);
 
-export const postMessageInput = z.object({
-  text: messageText,
+/** Attachments per message. */
+export const MAX_FILES_PER_MESSAGE = 10;
+
+export const postMessageInput = z
+  .object({
+    // Optional when files are attached.
+    text: z.string().trim().max(4000).default(""),
   // Client-generated idempotency key: retries of the same send never duplicate.
   clientMsgId: z.string().min(1).max(64),
   /** Reply in this message's thread. */
   parentId: z.number().int().positive().optional(),
   /** A thread reply that also appears in the channel. */
   alsoSendToChannel: z.boolean().default(false),
-});
+  /** Files uploaded to this conversation by the sender and not yet attached. */
+  fileIds: z.array(z.uuid()).max(MAX_FILES_PER_MESSAGE).default([]),
+})
+  .refine((m) => m.text.length > 0 || m.fileIds.length > 0, { message: "메시지 내용이나 파일이 필요합니다", path: ["text"] });
 export type PostMessageInput = z.input<typeof postMessageInput>;
 
 export const editMessageInput = z.object({ text: messageText });
@@ -61,6 +69,52 @@ export const historyQuery = z.object({
   before: z.coerce.number().int().positive().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
 });
+
+export const notifyLevels = ["all", "mentions", "none"] as const;
+export type NotifyLevel = (typeof notifyLevels)[number];
+export const notifyInput = z.object({ level: z.enum(notifyLevels) });
+/** Until a member picks a level: everything in DMs, mentions in channels. */
+export const defaultNotifyLevel = (kind: "public" | "private" | "dm"): NotifyLevel => (kind === "dm" ? "all" : "mentions");
+
+const clock = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "HH:MM");
+const timeZone = z.string().refine((tz) => {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}, "unknown time zone");
+
+export const preferencesInput = z.object({
+  timeZone,
+  quietHours: z.object({ enabled: z.boolean(), start: clock, end: clock }),
+});
+export type Preferences = z.infer<typeof preferencesInput>;
+
+export const pushSubscriptionInput = z.object({
+  endpoint: z.url({ protocol: /^https?$/ }).max(2048),
+  keys: z.object({ p256dh: z.string().min(1).max(256), auth: z.string().min(1).max(256) }),
+});
+export const pushUnsubscribeInput = z.object({ endpoint: z.string().max(2048) });
+
+export const searchQuery = z.object({
+  /** Words separated by spaces; every word must appear (case-insensitive substring). */
+  q: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .refine((q) => q.split(/\s+/).length <= 10, "검색어는 10개 단어까지입니다"),
+  channelId: z.uuid().optional(),
+  authorId: z.uuid().optional(),
+  /** Inclusive lower and exclusive upper bound on the send time. */
+  from: z.iso.datetime({ offset: true }).optional(),
+  to: z.iso.datetime({ offset: true }).optional(),
+  before: z.coerce.number().int().positive().optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+});
+export type SearchQuery = z.input<typeof searchQuery>;
 
 // Mentions are stored inline as tokens so edits and display names never drift:
 // `<@user-uuid>` mentions one person, `<!channel>` everyone in the conversation.
@@ -82,6 +136,8 @@ export function parseMentions(text: string): { userIds: string[]; channel: boole
 export const clientEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("typing"), channelId: z.uuid(), parentId: z.number().int().positive().nullable() }),
   z.object({ type: z.literal("presence"), status: z.enum(["active", "away"]) }),
+  /** Whether this tab is visible and focused; push notifications skip people looking at Chatter. */
+  z.object({ type: z.literal("focus"), focused: z.boolean() }),
 ]);
 export type ClientEvent = z.infer<typeof clientEvent>;
 
@@ -116,11 +172,23 @@ export interface Channel extends ChannelSummary {
   unreadCount: number;
   /** Unread mentions of the viewer, thread replies included. */
   mentionCount: number;
+  /** The viewer's effective notification level here. */
+  notify: NotifyLevel;
 }
 
 export interface Reaction {
   emoji: string;
   userIds: string[];
+}
+
+export interface FileRef {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  /** Same-origin download URL; images in a safe raster format also display inline. */
+  url: string;
+  inline: boolean;
 }
 
 export interface ThreadSummary {
@@ -147,6 +215,7 @@ export interface Message {
   mentions: string[];
   mentionsChannel: boolean;
   reactions: Reaction[];
+  files: FileRef[];
   /** Null when the message has no replies. */
   thread: ThreadSummary | null;
 }

@@ -8,6 +8,7 @@ import { endSession } from "../session";
 import { channelLabel, useDirectory } from "../directory";
 import { useConnectionStatus } from "../realtime";
 import { Avatar, PresenceDot, UserPicker } from "./People";
+import { SettingsDialog } from "./Settings";
 
 const STATUS_LABEL = { open: "연결됨", connecting: "연결 중…", closed: "재연결 대기" } as const;
 
@@ -18,6 +19,7 @@ export function Sidebar({ me, channels, activeId }: { me: User; channels: Channe
   const { names } = useDirectory();
   const [creating, setCreating] = useState(false);
   const [startingDm, setStartingDm] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const byLabel = (a: Channel, b: Channel) => channelLabel(a, names, me.id).localeCompare(channelLabel(b, names, me.id));
@@ -62,7 +64,13 @@ export function Sidebar({ me, channels, activeId }: { me: User; channels: Channe
       <li key={c.id}>
         <Link
           to={`/c/${c.id}`}
-          className={["channel-link", c.id === activeId && "active", (c.unreadCount > 0 || badge > 0) && c.id !== activeId && "unread"]
+          className={[
+            "channel-link",
+            c.id === activeId && "active",
+            c.notify === "none" && "muted-channel",
+            // Muted conversations stay quiet unless someone mentions you.
+            ((c.unreadCount > 0 && c.notify !== "none") || badge > 0) && c.id !== activeId && "unread",
+          ]
             .filter(Boolean)
             .join(" ")}
         >
@@ -81,7 +89,23 @@ export function Sidebar({ me, channels, activeId }: { me: User; channels: Channe
         <span className={`status status-${status}`} title={STATUS_LABEL[status]} />
       </header>
 
+      <form
+        className="search-box"
+        role="search"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const q = String(new FormData(e.currentTarget).get("q") ?? "").trim();
+          if (q) navigate(`/search?q=${encodeURIComponent(q)}`);
+        }}
+      >
+        <input name="q" type="search" placeholder="메시지 검색" aria-label="메시지 검색" />
+      </form>
+
       <nav>
+        <Link to="/saved" className="channel-link saved-link">
+          <span className="hash">🔖</span>
+          <span className="name">저장한 메시지</span>
+        </Link>
         <h2>채널</h2>
         <ul>{joined.map(item)}</ul>
         {creating ? (
@@ -122,11 +146,15 @@ export function Sidebar({ me, channels, activeId }: { me: User; channels: Channe
         <Avatar name={me.displayName} size="sm" />
         <PresenceDot userId={me.id} />
         <span className="me">{me.displayName}</span>
+        <button className="link" onClick={() => setSettingsOpen(true)}>
+          설정
+        </button>
         <button className="link" onClick={logout}>
           로그아웃
         </button>
       </footer>
 
+      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
       {startingDm && (
         <UserPicker
           title="새 메시지"

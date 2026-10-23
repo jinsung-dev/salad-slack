@@ -6,6 +6,7 @@ import {
   check,
   index,
   integer,
+  smallint,
   pgTable,
   primaryKey,
   text,
@@ -26,6 +27,11 @@ export const users = pgTable(
     // The identity provider account (Google: issuer + `sub`); stable when the email changes.
     oidcIssuer: text(),
     oidcSubject: text(),
+    // Notification preferences. Quiet hours are minutes after local midnight in `timeZone`.
+    timeZone: text().notNull().default("Asia/Seoul"),
+    quietHoursEnabled: boolean().notNull().default(false),
+    quietHoursStart: smallint().notNull().default(22 * 60),
+    quietHoursEnd: smallint().notNull().default(8 * 60),
     createdAt: createdAt(),
   },
   (t) => [unique("users_oidc_identity_uq").on(t.oidcIssuer, t.oidcSubject)],
@@ -82,6 +88,8 @@ export const channelMembers = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     // Everything at channel level with messages.id <= this is read.
     lastReadMessageId: bigint({ mode: "number" }).notNull().default(0),
+    // Null follows the default for the conversation kind (DMs: all, channels: mentions).
+    notify: text({ enum: ["all", "mentions", "none"] }),
     joinedAt: createdAt(),
   },
   (t) => [primaryKey({ columns: [t.channelId, t.userId] }), index("channel_members_user_id_idx").on(t.userId)],
@@ -113,6 +121,8 @@ export const messages = pgTable(
   (t) => [
     index("messages_channel_id_id_idx").on(t.channelId, t.id),
     index("messages_parent_id_id_idx").on(t.parentId, t.id),
+    // Substring search (ILIKE '%term%'); needs the pg_trgm extension (migration 0004).
+    index("messages_text_trgm_idx").using("gin", sql`${t.text} gin_trgm_ops`),
     unique("messages_user_client_msg_id_uq").on(t.userId, t.clientMsgId),
   ],
 );
@@ -148,4 +158,56 @@ export const mentions = pgTable(
     readAt: timestamp({ withTimezone: true }),
   },
   (t) => [primaryKey({ columns: [t.messageId, t.userId] }), index("mentions_user_channel_idx").on(t.userId, t.channelId)],
+);
+
+/** Uploaded attachments. Bytes live in file storage under `storageKey`; a file joins a message when it is posted. */
+export const files = pgTable(
+  "files",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    uploaderId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // The conversation it was uploaded for; it can only be attached there.
+    channelId: uuid()
+      .notNull()
+      .references(() => channels.id, { onDelete: "cascade" }),
+    messageId: bigint({ mode: "number" }).references(() => messages.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    mimeType: text().notNull(),
+    size: bigint({ mode: "number" }).notNull(),
+    storageKey: text().notNull().unique(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("files_message_id_idx").on(t.messageId)],
+);
+
+/** Browser push endpoints (Web Push), one per browser profile a person enabled notifications in. */
+export const pushSubscriptions = pgTable(
+  "push_subscriptions",
+  {
+    endpoint: text().primaryKey(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    p256dh: text().notNull(),
+    auth: text().notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("push_subscriptions_user_id_idx").on(t.userId)],
+);
+
+/** Messages a person bookmarked for later. */
+export const savedMessages = pgTable(
+  "saved_messages",
+  {
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    messageId: bigint({ mode: "number" })
+      .notNull()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    savedAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.messageId] })],
 );

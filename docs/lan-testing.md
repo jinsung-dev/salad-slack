@@ -59,7 +59,7 @@ Sign-in is limited to 10 attempts per minute per address.
   two-week Phase 2 gate.
 - The Wi-Fi address can change after reconnecting; re-check it with
   `ipconfig getifaddr en0` and tell testers.
-- Data lives in this Mac's Docker volume. Back it up before `docker compose down -v`.
+- Data lives in this Mac's Docker volume, and attachments in `data/uploads/`. Back both up before `docker compose down -v`.
 
 ## Stop
 

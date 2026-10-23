@@ -35,12 +35,17 @@ Phase 1 dogfooding was deferred into the Phase 2 gate.
 
 Gate (PRD): the dogfooding team holds 90%+ of work conversation in Chatter for 2 weeks. Phase 0 web research and Phase 1 dogfooding were deferred into this gate (decision 2026-10-22).
 
-## Phase 3 — Productivity + desktop
+## Phase 3 — Productivity + desktop (P0 and P2 built; P1 pending a decision)
 
-- File upload (S3-compatible, MinIO locally) with previews
-- Search (Postgres full-text first)
-- Web push notifications and per-channel notification settings
-- Electron shell: notifications, dock badge, `chatter://` deep links, tray, spellcheck
+- [x] File upload: picker, drag and drop, paste; images inline, other files as downloads (25 MB default)
+- [x] Search: partial words (Korean included) across readable conversations, channel/author/period filters
+- [x] Notification levels per conversation (all / mentions / off) and daily quiet hours
+- [x] Web push for people not looking at Chatter; clicking opens the conversation or thread
+- [x] Saved messages (P2)
+- [ ] Desktop app (P1): Electron shell with native notifications, dock badge, `chatter://` links, tray
+- [ ] Auto-update (P1): needs a code-signed macOS build (Apple Developer account)
+
+Decisions: files on the server's local disk (one server; S3 needed for several), Postgres trigram search instead of a search engine. Started alongside the Phase 2 dogfooding gate (decision 2026-10-23).
 
 ## Phase 4 — Platform
 

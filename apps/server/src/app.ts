@@ -3,6 +3,7 @@ import { join } from "node:path";
 import Fastify from "fastify";
 import cookie from "@fastify/cookie";
 import rateLimit from "@fastify/rate-limit";
+import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { sql } from "drizzle-orm";
@@ -10,12 +11,18 @@ import { ZodError } from "zod";
 import type { User } from "@chatter/shared";
 import { SESSION_COOKIE, findSessionUser } from "./auth";
 import type { Db } from "./db/client";
+import { FileStore } from "./files";
+import type { PushSender } from "./notify";
 import { Oidc, type OidcConfig } from "./oidc";
 import { channelAccess, memberIds } from "./queries";
 import { RealtimeHub } from "./realtime";
 import { authRoutes } from "./routes/auth";
 import { channelRoutes } from "./routes/channels";
+import { fileRoutes } from "./routes/files";
 import { messageRoutes } from "./routes/messages";
+import { pushRoutes } from "./routes/push";
+import { savedRoutes } from "./routes/saved";
+import { searchRoutes } from "./routes/search";
 import { userRoutes } from "./routes/users";
 
 declare module "fastify" {
@@ -33,6 +40,10 @@ export interface AppDeps {
   cookieSecure: boolean;
   /** Sign-in attempts per client IP per minute. */
   authRateLimit: number;
+  fileStore: FileStore;
+  maxFileBytes: number;
+  /** Web Push; null when no VAPID keys are configured. */
+  push: { publicKey: string; send: PushSender } | null;
 }
 
 /** One typing event per user and conversation in this window is relayed; the rest are dropped. */
@@ -48,6 +59,9 @@ export async function buildApp({
   allowedEmailDomains = [],
   authRateLimit = 10,
   webDist,
+  fileStorageDir,
+  maxFileBytes = 25 * 1024 * 1024,
+  push = null,
   trustProxy = false,
   logger = true,
 }: {
@@ -62,6 +76,10 @@ export async function buildApp({
   authRateLimit?: number;
   /** Directory of the built web app to serve; skipped when it has no index.html. */
   webDist?: string;
+  /** Where attachment bytes are written. */
+  fileStorageDir: string;
+  maxFileBytes?: number;
+  push?: AppDeps["push"];
   /** Trust X-Forwarded-* from a reverse proxy, so rate limits key on the real client. */
   trustProxy?: boolean;
   logger?: boolean;
@@ -69,10 +87,21 @@ export async function buildApp({
   const app = Fastify({ logger, trustProxy });
   const hub = await RealtimeHub.start(redisUrl, redisPrefix, (msg, err) => app.log.error({ err }, msg));
   app.addHook("onClose", async () => hub.close());
-  const deps: AppDeps = { db, hub, oidc: new Oidc(oidc, allowedEmailDomains), publicUrl, cookieSecure, authRateLimit };
+  const deps: AppDeps = {
+    db,
+    hub,
+    oidc: new Oidc(oidc, allowedEmailDomains),
+    publicUrl,
+    cookieSecure,
+    authRateLimit,
+    fileStore: new FileStore(fileStorageDir),
+    maxFileBytes,
+    push,
+  };
 
   await app.register(cookie);
   await app.register(websocket);
+  await app.register(multipart);
   // Opt-in per route (sign-in). Counts are per node.
   await app.register(rateLimit, { global: false });
 
@@ -140,5 +169,9 @@ export async function buildApp({
   await app.register(channelRoutes, deps);
   await app.register(messageRoutes, deps);
   await app.register(userRoutes, deps);
+  await app.register(searchRoutes, deps);
+  await app.register(fileRoutes, deps);
+  await app.register(pushRoutes, deps);
+  await app.register(savedRoutes, deps);
   return app;
 }

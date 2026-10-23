@@ -170,3 +170,48 @@ test("signing out returns to sign-in, also for other tabs of the session", async
   await signInAs(page, name);
   await expect(page.getByRole("link", { name: `# out-${run}` })).toBeVisible();
 });
+
+test("files, search and notification settings", async ({ browser }) => {
+  const channel = `p3-${run}`;
+  const alice = await signUp(browser, `alicef${run}`);
+  const bob = await signUp(browser, `bobf${run}`);
+  await createChannel(alice, channel);
+  await bob.getByRole("link", { name: `# ${channel}` }).click();
+  await bob.getByRole("button", { name: "채널 참여" }).click();
+
+  // Alice attaches an image and a document; Bob sees the image inline and the document as a card.
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+  await alice.locator('input[type="file"]').setInputFiles([
+    { name: "화면.png", mimeType: "image/png", buffer: png },
+    { name: "회의록.txt", mimeType: "text/plain", buffer: Buffer.from("배포 체크리스트") },
+  ]);
+  await expect(alice.locator(".attachment.done")).toHaveCount(2);
+  await send(alice, `#${channel}에 메시지 보내기`, `배포 자료 ${run}`);
+  const shared = message(bob, `배포 자료 ${run}`);
+  await expect(shared.locator(".file-image img")).toHaveAttribute("alt", "화면.png");
+  await expect(shared.locator(".file-card")).toContainText("회의록.txt");
+  expect(await shared.locator(".file-image img").evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(1);
+
+  // Bob searches with a partial word and opens the result beside the channel.
+  await bob.getByRole("searchbox", { name: "메시지 검색" }).fill(`배포 ${run}`);
+  await bob.getByRole("searchbox", { name: "메시지 검색" }).press("Enter");
+  const result = bob.locator(".search-result").filter({ hasText: `자료 ${run}` });
+  await expect(result.locator("mark").first()).toHaveText("배포");
+  await result.click();
+  await expect(bob.locator(".thread .message").filter({ hasText: `배포 자료 ${run}` })).toBeVisible();
+
+  // Bob saves the message and finds it under saved messages.
+  await shared.hover();
+  await shared.getByRole("button", { name: "저장", exact: true }).click();
+  await expect(shared.getByRole("button", { name: "저장 취소" })).toBeVisible();
+  await bob.getByRole("link", { name: "저장한 메시지" }).click();
+  await expect(bob.locator(".search-result").filter({ hasText: `배포 자료 ${run}` })).toBeVisible();
+  await bob.getByRole("link", { name: `# ${channel}` }).click();
+
+  // Muting dims the channel in the sidebar.
+  await bob.getByLabel("알림 수준").selectOption("none");
+  await expect(bob.getByRole("link", { name: `# ${channel}` })).toHaveClass(/muted-channel/);
+  await bob.getByRole("button", { name: "설정" }).click();
+  await expect(bob.getByRole("dialog", { name: "설정" })).toContainText("데스크톱 알림");
+  await bob.screenshot({ path: "e2e/artifacts/phase3.png" });
+});
