@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import type { Channel, ChannelSummary, Message, MessagePage } from "@chatter/shared";
-import { appendMessage, flattenPages, keys, removeMessage, updateMessage, upsertChannel } from "./cache";
+import { appendMessage, flattenPages, keys, removeMessage, updateChannel, updateMessage, upsertChannel } from "./cache";
 
 const msg = (id: number, extra: Partial<Message> = {}): Message => ({
   id,
@@ -60,7 +60,7 @@ describe("message cache", () => {
 });
 
 describe("channel cache", () => {
-  const summary: ChannelSummary = { id: "c1", kind: "public", name: "general", topic: "", memberIds: null };
+  const summary: ChannelSummary = { id: "c1", workspaceId: "w1", kind: "public", name: "general", topic: "", memberIds: null };
   const created: Channel = { ...summary, isMember: true, unreadCount: 0, mentionCount: 0, notify: "mentions" };
 
   it("keeps the creator's membership whichever of the event and the response arrives first", () => {
@@ -69,16 +69,26 @@ describe("channel cache", () => {
       (qc: QueryClient) => (upsertChannel(qc, created), upsertChannel(qc, summary, true)),
     ]) {
       const qc = new QueryClient();
-      qc.setQueryData<Channel[]>(keys.channels, []);
+      qc.setQueryData<Channel[]>(keys.channels("w1"), []);
       apply(qc);
-      expect(qc.getQueryData<Channel[]>(keys.channels)).toEqual([created]);
+      expect(qc.getQueryData<Channel[]>(keys.channels("w1"))).toEqual([created]);
     }
   });
 
   it("keeps known unread counts when an event only changes membership", () => {
     const qc = new QueryClient();
-    qc.setQueryData<Channel[]>(keys.channels, [{ ...created, isMember: false, unreadCount: 3 }]);
+    qc.setQueryData<Channel[]>(keys.channels("w1"), [{ ...created, isMember: false, unreadCount: 3 }]);
     upsertChannel(qc, summary, true);
-    expect(qc.getQueryData<Channel[]>(keys.channels)).toEqual([{ ...created, unreadCount: 3 }]);
+    expect(qc.getQueryData<Channel[]>(keys.channels("w1"))).toEqual([{ ...created, unreadCount: 3 }]);
+  });
+
+  it("files a channel under its workspace and updates it wherever it is listed", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<Channel[]>(keys.channels("w1"), []);
+    qc.setQueryData<Channel[]>(keys.channels("w2"), []);
+    upsertChannel(qc, created);
+    expect(qc.getQueryData<Channel[]>(keys.channels("w2"))).toEqual([]);
+    updateChannel(qc, "c1", (c) => ({ ...c, unreadCount: 2 }));
+    expect(qc.getQueryData<Channel[]>(keys.channels("w1"))![0]!.unreadCount).toBe(2);
   });
 });

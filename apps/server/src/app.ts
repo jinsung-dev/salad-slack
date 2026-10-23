@@ -15,6 +15,7 @@ import { FileStore } from "./files";
 import type { PushSender } from "./notify";
 import { Oidc, type OidcConfig } from "./oidc";
 import { channelAccess, memberIds } from "./queries";
+import { coMemberIds, expireMemberships } from "./workspaces";
 import { RealtimeHub } from "./realtime";
 import { authRoutes } from "./routes/auth";
 import { channelRoutes } from "./routes/channels";
@@ -22,6 +23,9 @@ import { fileRoutes } from "./routes/files";
 import { messageRoutes } from "./routes/messages";
 import { pushRoutes } from "./routes/push";
 import { savedRoutes } from "./routes/saved";
+import { inviteRoutes } from "./routes/invites";
+import { webhookRoutes } from "./routes/webhooks";
+import { workspaceRoutes } from "./routes/workspaces";
 import { searchRoutes } from "./routes/search";
 import { userRoutes } from "./routes/users";
 
@@ -148,6 +152,15 @@ export async function buildApp({
     (socket, req) => hub.add(req.user!.id, socket),
   );
 
+  hub.setPresenceAudience((userId) => coMemberIds(db, userId));
+
+  // Guest accounts with an end date leave on the next sweep after it (at most a minute late).
+  const sweep = () => void expireMemberships(db, hub).catch((err) => app.log.error({ err }, "membership expiry failed"));
+  sweep();
+  const sweeper = setInterval(sweep, 60_000);
+  sweeper.unref();
+  app.addHook("onClose", async () => clearInterval(sweeper));
+
   const lastTyping = new Map<string, number>();
   hub.handleClientEvents(async (userId, event) => {
     const key = `${userId}:${event.channelId}:${event.parentId ?? ""}`;
@@ -173,5 +186,8 @@ export async function buildApp({
   await app.register(fileRoutes, deps);
   await app.register(pushRoutes, deps);
   await app.register(savedRoutes, deps);
+  await app.register(workspaceRoutes, deps);
+  await app.register(inviteRoutes, deps);
+  await app.register(webhookRoutes, deps);
   return app;
 }

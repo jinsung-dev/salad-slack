@@ -1,20 +1,35 @@
 import type { FastifyInstance } from "fastify";
-import { asc, eq } from "drizzle-orm";
-import { preferencesInput, type Member, type Preferences } from "@chatter/shared";
+import { and, asc, eq } from "drizzle-orm";
+import { preferencesInput, workspaceParams, type Member, type PresenceMap, type Preferences } from "@chatter/shared";
 import type { AppDeps } from "../app";
-import { users } from "../db/schema";
+import { users, workspaceMembers } from "../db/schema";
+import { requireRole, workspaceMemberIds } from "../workspaces";
 
 export async function userRoutes(app: FastifyInstance, { db, hub }: AppDeps) {
   app.addHook("preHandler", async (req, reply) => {
     if (!req.user) return reply.code(401).send({ error: "unauthenticated" });
   });
 
-  // Single workspace: everyone is in the directory (Phase 4 scopes this per workspace).
-  app.get("/api/users", async (): Promise<Member[]> =>
-    db.select({ id: users.id, displayName: users.displayName }).from(users).orderBy(asc(users.displayName)),
-  );
+  // The workspace's people (bots excluded), for mentions, DMs and invites.
+  app.get("/api/workspaces/:workspaceId/members", async (req, reply): Promise<Member[] | undefined> => {
+    const { workspaceId } = workspaceParams.parse(req.params);
+    if (!(await requireRole(db, reply, workspaceId, req.user!.id, "guest"))) return;
+    const rows = await db
+      .select({ id: users.id, displayName: users.displayName, role: workspaceMembers.role, expiresAt: workspaceMembers.expiresAt })
+      .from(workspaceMembers)
+      .innerJoin(users, eq(users.id, workspaceMembers.userId))
+      .where(and(eq(workspaceMembers.workspaceId, workspaceId), eq(users.kind, "person")))
+      .orderBy(asc(users.displayName));
+    return rows.map((r) => ({ ...r, expiresAt: r.expiresAt?.toISOString() ?? null }));
+  });
 
-  app.get("/api/presence", async () => hub.presence());
+  // Presence of this workspace's people only.
+  app.get("/api/workspaces/:workspaceId/presence", async (req, reply): Promise<PresenceMap | undefined> => {
+    const { workspaceId } = workspaceParams.parse(req.params);
+    if (!(await requireRole(db, reply, workspaceId, req.user!.id, "guest"))) return;
+    const members = new Set(await workspaceMemberIds(db, workspaceId));
+    return Object.fromEntries(Object.entries(await hub.presence()).filter(([id]) => members.has(id)));
+  });
 
   const clock = (minutes: number) => `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
   const minutes = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));

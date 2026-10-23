@@ -2,15 +2,19 @@ import { useQuery } from "@tanstack/react-query";
 import { CHANNEL_MENTION, mentionToken, type Channel, type Member } from "@chatter/shared";
 import { api } from "./api";
 import { keys } from "./cache";
+import { useCurrentWorkspace } from "./workspace";
 
 export type Names = ReadonlyMap<string, string>;
 
+/** People of the current workspace. */
 export function useDirectory() {
-  // Kept current by member.joined events; refetched after a reconnect.
-  const users = useQuery({ queryKey: keys.users, queryFn: api.users });
+  const { id } = useCurrentWorkspace();
+  // Kept current by member.* events; refetched after a reconnect.
+  const users = useQuery({ queryKey: keys.members(id), queryFn: () => api.members(id) });
   const list = users.data ?? [];
   const names: Names = new Map(list.map((u) => [u.id, u.displayName]));
-  return { users: list, names };
+  const guests: ReadonlySet<string> = new Set(list.filter((u) => u.role === "guest").map((u) => u.id));
+  return { users: list, names, guests };
 }
 
 export const nameOf = (names: Names, id: string) => names.get(id) ?? "알 수 없는 사용자";

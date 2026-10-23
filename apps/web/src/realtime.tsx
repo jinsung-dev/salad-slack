@@ -1,16 +1,19 @@
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router";
 import type { ClientEvent, Message, ServerEvent } from "@chatter/shared";
 import {
-  addMember,
   appendMessage,
+  forgetWorkspace,
   keys,
+  removeMember,
   removeMessage,
   replaceMessage,
   setPresence,
   updateChannel,
   updateMessage,
   upsertChannel,
+  upsertMember,
 } from "./cache";
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
@@ -77,6 +80,10 @@ const IDLE_MS = 5 * 60 * 1000;
 
 export function RealtimeProvider({ userId, children }: { userId: string; children: ReactNode }) {
   const qc = useQueryClient();
+  // Through a ref: navigate changes on every route change, and the socket must not.
+  const navigate = useNavigate();
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const socketRef = useRef<WebSocket | null>(null);
   const awayRef = useRef(false);
@@ -121,7 +128,15 @@ export function RealtimeProvider({ userId, children }: { userId: string; childre
         case "reaction.updated":
           return updateMessage(qc, event.channelId, event.messageId, (m) => ({ ...m, reactions: event.reactions }));
         case "member.joined":
-          return addMember(qc, event.member);
+        case "member.updated":
+          if (event.member.id === userId) void qc.invalidateQueries({ queryKey: keys.workspaces });
+          return upsertMember(qc, event.workspaceId, event.member);
+        case "member.removed":
+          if (event.userId !== userId) return removeMember(qc, event.workspaceId, event.userId);
+          // Removed from a workspace: drop what was cached and leave it if it is on screen.
+          forgetWorkspace(qc, event.workspaceId);
+          if (location.pathname.startsWith(`/w/${event.workspaceId}`)) navigateRef.current("/", { replace: true });
+          return;
         case "presence.changed":
           return setPresence(qc, event.userId, event.status);
         case "typing":
@@ -139,7 +154,7 @@ export function RealtimeProvider({ userId, children }: { userId: string; childre
         reportFocus();
         // Anything sent while we were disconnected is only in the database.
         if (attempt > 0) {
-          for (const key of [keys.channels, keys.users, keys.presence, ["messages"], ["thread"], ["message"]]) {
+          for (const key of [keys.workspaces, ["channels"], ["members"], ["presence"], ["messages"], ["thread"], ["message"], ["saved"]]) {
             void qc.invalidateQueries({ queryKey: key });
           }
         }

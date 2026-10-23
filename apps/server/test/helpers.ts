@@ -5,10 +5,11 @@ import { join } from "node:path";
 import { afterAll, beforeAll, expect } from "vitest";
 import { sql } from "drizzle-orm";
 import { WebSocket } from "ws";
-import type { ClientEvent, ServerEvent } from "@chatter/shared";
+import type { ClientEvent, Invite, ServerEvent, Workspace } from "@chatter/shared";
 import { startFakeOidc, type FakeOidc } from "../devtools/fake-oidc";
 import { buildApp } from "../src/app";
 import { createDb, runMigrations } from "../src/db/client";
+import { RealtimeHub } from "../src/realtime";
 
 const DATABASE_URL = process.env.TEST_DATABASE_URL ?? "postgres://chatter:chatter@localhost:54329/chatter_test";
 const REDIS_URL = process.env.TEST_REDIS_URL ?? "redis://localhost:56379";
@@ -23,6 +24,8 @@ export function useCluster(
 ) {
   const { db, pool } = createDb(DATABASE_URL);
   const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
+  // A hub on the cluster's Redis namespace, for tests that run server-side jobs directly.
+  const hubRef: { current?: RealtimeHub } = {};
   const urls: string[] = [];
   // Unique per run so a dev server on the same Redis never sees test traffic.
   const redisPrefix = `chatter-test-${randomUUID()}:`;
@@ -50,15 +53,24 @@ export function useCluster(
       apps.push(app);
       urls.push(await app.listen({ port: 0, host: "127.0.0.1" }));
     }
+    hubRef.current = await RealtimeHub.start(REDIS_URL, redisPrefix, () => {});
   });
 
   afterAll(async () => {
     for (const app of apps) await app.close();
+    await hubRef.current?.close();
     await oidc?.close();
     await pool.end();
   });
 
-  return { urls, db, fileStorageDir };
+  return {
+    urls,
+    db,
+    fileStorageDir,
+    get hub() {
+      return hubRef.current!;
+    },
+  };
 }
 
 const cookieValue = (res: Response, name: string) =>
@@ -154,3 +166,36 @@ export function connect(baseUrl: string, cookie?: string) {
 }
 
 export const uniqueName = () => `ch-${randomUUID().slice(0, 8)}`;
+
+/**
+ * A workspace for a test file, owned by a fresh account, plus a reusable
+ * member invite so tests add people the way people join. Call at module scope
+ * after `useCluster`.
+ */
+export function useWorkspace(base: () => string, name = "Test") {
+  const state = { id: "", token: "" };
+  let owner: Client | undefined;
+  beforeAll(async () => {
+    owner = await signIn(base(), "owner");
+    state.id = (await owner.call<Workspace>("POST", "/api/workspaces", { name })).body.id;
+    const invite = (await owner.call<Invite>("POST", `/api/workspaces/${state.id}/invites`, { role: "member" })).body;
+    state.token = invite.url!.split("/invite/")[1]!;
+  });
+  return {
+    get id() {
+      return state.id;
+    },
+    get owner() {
+      return owner!;
+    },
+    /** A new person who joined this workspace as a member. */
+    async member(personName: string, email?: string) {
+      const client = await signIn(base(), personName, email);
+      const accepted = await client.call("POST", `/api/invites/${state.token}/accept`);
+      expect(accepted.status).toBe(200);
+      return client;
+    },
+    /** `/api/workspaces/<id><rest>` */
+    path: (rest: string) => `/api/workspaces/${state.id}${rest}`,
+  };
+}

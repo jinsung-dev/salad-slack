@@ -22,8 +22,12 @@ export const users = pgTable(
   "users",
   {
     id: uuid().primaryKey().defaultRandom(),
+    // Bots (webhooks) get a placeholder address under the reserved .invalid domain.
     email: text().notNull().unique(),
     displayName: text().notNull(),
+    kind: text({ enum: ["person", "bot"] })
+      .notNull()
+      .default("person"),
     // The identity provider account (Google: issuer + `sub`); stable when the email changes.
     oidcIssuer: text(),
     oidcSubject: text(),
@@ -35,6 +39,68 @@ export const users = pgTable(
     createdAt: createdAt(),
   },
   (t) => [unique("users_oidc_identity_uq").on(t.oidcIssuer, t.oidcSubject)],
+);
+
+/** A team's space: its people, channels and messages, isolated from every other workspace. */
+export const workspaces = pgTable("workspaces", {
+  id: uuid().primaryKey().defaultRandom(),
+  name: text().notNull(),
+  // People with a verified email at this domain may join without an invite; null = invite only.
+  joinDomain: text(),
+  createdBy: uuid()
+    .notNull()
+    .references(() => users.id),
+  createdAt: createdAt(),
+});
+
+export const workspaceRoles = ["owner", "admin", "member", "guest"] as const;
+
+export const workspaceMembers = pgTable(
+  "workspace_members",
+  {
+    workspaceId: uuid()
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: text({ enum: workspaceRoles }).notNull().default("member"),
+    // Guest accounts can end on a date; a sweep removes them like any removal.
+    expiresAt: timestamp({ withTimezone: true }),
+    joinedAt: createdAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.userId] }),
+    index("workspace_members_user_id_idx").on(t.userId),
+    index("workspace_members_expires_at_idx").on(t.expiresAt),
+  ],
+);
+
+/** Join links. Bound to one email they are single-use; otherwise reusable until they expire or are revoked. */
+export const invites = pgTable(
+  "invites",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    workspaceId: uuid()
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    // Only the SHA-256 of the link token is stored.
+    tokenHash: text().notNull().unique(),
+    role: text({ enum: ["admin", "member", "guest"] }).notNull(),
+    email: text(),
+    // Accepting also adds the person to this channel (e.g. an outside guest for one project).
+    channelId: uuid().references((): AnyPgColumn => channels.id, { onDelete: "cascade" }),
+    // How long a guest who joins through this invite stays; null = no end.
+    guestDays: smallint(),
+    createdBy: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    usedAt: timestamp({ withTimezone: true }),
+    revokedAt: timestamp({ withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("invites_workspace_id_idx").on(t.workspaceId)],
 );
 
 export const sessions = pgTable(
@@ -55,13 +121,16 @@ export const channels = pgTable(
   "channels",
   {
     id: uuid().primaryKey().defaultRandom(),
+    workspaceId: uuid()
+      .notNull()
+      .references((): AnyPgColumn => workspaces.id, { onDelete: "cascade" }),
     kind: text({ enum: ["public", "private", "dm"] })
       .notNull()
       .default("public"),
-    // Unique across public and private channels; null for DMs.
-    name: text().unique(),
-    // Sorted member ids for DMs, so one set of people maps to one conversation.
-    dmKey: text().unique(),
+    // Unique within the workspace across public and private channels; null for DMs.
+    name: text(),
+    // Sorted member ids for DMs, so one set of people maps to one conversation per workspace.
+    dmKey: text(),
     topic: text().notNull().default(""),
     createdBy: uuid()
       .notNull()
@@ -69,6 +138,8 @@ export const channels = pgTable(
     createdAt: createdAt(),
   },
   (t) => [
+    unique("channels_workspace_name_uq").on(t.workspaceId, t.name),
+    unique("channels_workspace_dm_key_uq").on(t.workspaceId, t.dmKey),
     check(
       "channels_kind_shape",
       sql`(${t.kind} = 'dm' and ${t.name} is null and ${t.dmKey} is not null)
@@ -210,4 +281,28 @@ export const savedMessages = pgTable(
     savedAt: createdAt(),
   },
   (t) => [primaryKey({ columns: [t.userId, t.messageId] })],
+);
+
+/** Incoming webhooks: a secret URL that posts into one channel as its own bot user. */
+export const webhooks = pgTable(
+  "webhooks",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    workspaceId: uuid()
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    channelId: uuid()
+      .notNull()
+      .references(() => channels.id, { onDelete: "cascade" }),
+    botUserId: uuid()
+      .notNull()
+      .references(() => users.id),
+    name: text().notNull(),
+    tokenHash: text().notNull().unique(),
+    createdBy: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("webhooks_workspace_id_idx").on(t.workspaceId)],
 );

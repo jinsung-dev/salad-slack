@@ -4,6 +4,7 @@ import { useNavigate, useSearchParams } from "react-router";
 import { CHANNEL_MENTION, type Channel, type Message, type SearchQuery, type User } from "@chatter/shared";
 import { api } from "../api";
 import { keys } from "../cache";
+import { useCurrentWorkspace, workspacePath } from "../workspace";
 import { channelLabel, nameOf, useDirectory, type Names } from "../directory";
 import { Avatar } from "./People";
 
@@ -25,6 +26,7 @@ function highlight(text: string, words: string[]): ReactNode {
 
 export function SearchView({ channels, me }: { channels: Channel[]; me: User }) {
   const navigate = useNavigate();
+  const workspace = useCurrentWorkspace();
   const [params, setParams] = useSearchParams();
   const { users, names } = useDirectory();
   const q = params.get("q")?.trim() ?? "";
@@ -35,8 +37,8 @@ export function SearchView({ channels, me }: { channels: Channel[]; me: User }) 
   const query = useMemo((): SearchQuery | null => {
     if (!q) return null;
     const from = period === "all" ? undefined : new Date(new Date().setHours(0, 0, 0, 0) - (Number(period) - 1) * 86_400_000).toISOString();
-    return { q, channelId: channelId || undefined, authorId: authorId || undefined, from };
-  }, [q, channelId, authorId, period]);
+    return { workspaceId: workspace.id, q, channelId: channelId || undefined, authorId: authorId || undefined, from };
+  }, [workspace.id, q, channelId, authorId, period]);
 
   const results = useInfiniteQuery({
     queryKey: ["search", query],
@@ -57,7 +59,7 @@ export function SearchView({ channels, me }: { channels: Channel[]; me: User }) 
     setParams(next, { replace: true });
   };
   // A result opens beside its conversation: the message, or the thread it belongs to.
-  const open = (m: Message) => navigate(`/c/${m.channelId}/t/${m.parentId ?? m.id}`);
+  const open = (m: Message) => navigate(workspacePath(workspace.id, `/c/${m.channelId}/t/${m.parentId ?? m.id}`));
 
   return (
     <section className="channel search-view">
@@ -148,7 +150,8 @@ export function MessageResult({
 
 export function SavedView({ channels, me }: { channels: Channel[]; me: User }) {
   const navigate = useNavigate();
-  const saved = useQuery({ queryKey: keys.saved, queryFn: api.saved, staleTime: 0 });
+  const workspace = useCurrentWorkspace();
+  const saved = useQuery({ queryKey: keys.saved(workspace.id), queryFn: () => api.saved(workspace.id), staleTime: 0 });
   const byId = new Map(channels.map((c) => [c.id, c]));
   return (
     <section className="channel search-view">
@@ -161,7 +164,7 @@ export function SavedView({ channels, me }: { channels: Channel[]; me: User }) {
           <p className="empty-note muted">메시지에 마우스를 올리고 🔖를 누르면 여기에 모입니다.</p>
         )}
         {saved.data?.messages.map((m) => (
-          <MessageResult key={m.id} message={m} channel={byId.get(m.channelId)} me={me} onOpen={(x) => navigate(`/c/${x.channelId}/t/${x.parentId ?? x.id}`)} />
+          <MessageResult key={m.id} message={m} channel={byId.get(m.channelId)} me={me} onOpen={(x) => navigate(workspacePath(workspace.id, `/c/${x.channelId}/t/${x.parentId ?? x.id}`))} />
         ))}
       </div>
     </section>

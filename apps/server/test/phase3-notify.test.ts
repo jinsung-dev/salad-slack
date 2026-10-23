@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { CHANNEL_MENTION, mentionToken, type Channel, type Message, type Preferences } from "@chatter/shared";
 import { pushSubscriptions } from "../src/db/schema";
 import { inQuietHours, pushPayload, wantsNotification, type PushPayload, type PushTarget } from "../src/notify";
-import { connect, signIn, uniqueName, useCluster, type Client } from "./helpers";
+import { connect, signIn, uniqueName, useCluster, type Client, useWorkspace } from "./helpers";
 
 // A push service stand-in: records deliveries; endpoints ending in "/gone" report an expired subscription.
 const sent: Array<{ endpoint: string; payload: PushPayload }> = [];
@@ -13,6 +13,7 @@ const send = async (target: PushTarget, payload: string) => {
 };
 const { urls, db } = useCluster(1, { push: { publicKey: "test-public-key", send } });
 const base = () => urls[0]!;
+const home = useWorkspace(base);
 
 const msg = (over: Partial<Message> = {}): Message => ({
   id: 1, channelId: "c", parentId: null, author: { id: "author", displayName: "Kim" }, text: "hi", clientMsgId: "k",
@@ -48,14 +49,14 @@ describe("notification rules", () => {
   it("writes readable previews", () => {
     const names = new Map([["11111111-1111-4111-8111-111111111111", "Lee"]]);
     const text = `${mentionToken("11111111-1111-4111-8111-111111111111")} ${CHANNEL_MENTION}\n확인   부탁 ${"가".repeat(200)}`;
-    const p = pushPayload(msg({ id: 7, text }), { kind: "public", name: "dev" }, names);
+    const p = pushPayload(msg({ id: 7, text }), { workspaceId: "w", kind: "public", name: "dev" }, names);
     expect(p.title).toBe("#dev");
     expect(p.body.startsWith("Kim: @Lee @channel 확인 부탁 가")).toBe(true);
     expect(p.body.length).toBe("Kim: ".length + 140);
-    expect(p).toMatchObject({ url: "/c/c", tag: "message-7" });
-    const dm = pushPayload(msg({ text: "", files: [{ id: "f", name: "a", mimeType: "x/y", size: 1, url: "", inline: false }] }), { kind: "dm", name: null }, names);
+    expect(p).toMatchObject({ url: "/w/w/c/c", tag: "message-7" });
+    const dm = pushPayload(msg({ text: "", files: [{ id: "f", name: "a", mimeType: "x/y", size: 1, url: "", inline: false }] }), { workspaceId: "w", kind: "dm", name: null }, names);
     expect(dm).toMatchObject({ title: "Kim", body: "파일 1개" });
-    expect(pushPayload(msg({ parentId: 3 }), { kind: "public", name: "dev" }, names)).toMatchObject({ title: "#dev 스레드", url: "/c/c/t/3" });
+    expect(pushPayload(msg({ parentId: 3 }), { workspaceId: "w", kind: "public", name: "dev" }, names)).toMatchObject({ title: "#dev 스레드", url: "/w/w/c/c/t/3" });
   });
 });
 
@@ -71,8 +72,8 @@ describe("push delivery", () => {
   };
 
   async function setup() {
-    const [alice, bob] = [await signIn(base(), "alice"), await signIn(base(), "bob")];
-    const channel = (await alice.call<Channel>("POST", "/api/channels", { name: uniqueName() })).body;
+    const [alice, bob] = [await home.member("alice"), await home.member("bob")];
+    const channel = (await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName() })).body;
     await bob.call("POST", `/api/channels/${channel.id}/join`);
     await subscribe(bob);
     return { alice, bob, channel };
@@ -80,7 +81,7 @@ describe("push delivery", () => {
 
   it("follows the member's level: mentions by default in channels, everything in DMs", async () => {
     const { alice, bob, channel } = await setup();
-    expect((await bob.call<Channel[]>("GET", "/api/channels")).body.find((c) => c.id === channel.id)!.notify).toBe("mentions");
+    expect((await bob.call<Channel[]>("GET", home.path("/channels"))).body.find((c) => c.id === channel.id)!.notify).toBe("mentions");
     expect(await pushesFor(bob, (await post(alice, channel.id, "plain")).id)).toHaveLength(0);
     const mention = await post(alice, channel.id, `hey ${mentionToken(bob.id)}`);
     expect((await pushesFor(bob, mention.id))[0]!.payload).toMatchObject({ title: `#${channel.name}`, body: "alice: hey @bob" });
@@ -90,7 +91,7 @@ describe("push delivery", () => {
     await bob.call("PUT", `/api/channels/${channel.id}/notify`, { level: "none" });
     expect(await pushesFor(bob, (await post(alice, channel.id, `muted ${mentionToken(bob.id)}`)).id)).toHaveLength(0);
 
-    const dm = (await alice.call<Channel>("POST", "/api/dms", { userIds: [bob.id] })).body;
+    const dm = (await alice.call<Channel>("POST", home.path("/dms"), { userIds: [bob.id] })).body;
     expect(dm.notify).toBe("all");
     expect((await pushesFor(bob, (await post(alice, dm.id, "psst")).id))[0]!.payload).toMatchObject({ title: "alice", body: "psst" });
   });
@@ -132,7 +133,7 @@ describe("push delivery", () => {
   it("exposes the public key and keeps notification levels to members", async () => {
     const { alice, channel } = await setup();
     expect((await alice.call("GET", "/api/push/key")).body).toEqual({ publicKey: "test-public-key" });
-    const outsider = await signIn(base(), "carol");
+    const outsider = await home.member("carol");
     expect((await outsider.call("PUT", `/api/channels/${channel.id}/notify`, { level: "all" })).status).toBe(403);
   });
 });

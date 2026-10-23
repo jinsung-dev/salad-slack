@@ -1,20 +1,31 @@
 import type { InfiniteData, QueryClient, QueryKey } from "@tanstack/react-query";
-import { defaultNotifyLevel, type Channel, type ChannelSummary, type Member, type Message, type MessagePage, type PresenceMap, type PresenceStatus } from "@chatter/shared";
+import {
+  defaultNotifyLevel,
+  type Channel,
+  type ChannelSummary,
+  type Member,
+  type Message,
+  type MessagePage,
+  type PresenceMap,
+  type PresenceStatus,
+  type Workspace,
+} from "@chatter/shared";
 
 // Single owner of client-side cache mutations, shared by realtime events and
 // local REST responses so both paths deduplicate the same way.
 
 export const keys = {
   me: ["me"] as const,
-  users: ["users"] as const,
-  presence: ["presence"] as const,
-  channels: ["channels"] as const,
+  workspaces: ["workspaces"] as const,
+  members: (workspaceId: string) => ["members", workspaceId] as const,
+  presence: (workspaceId: string) => ["presence", workspaceId] as const,
+  channels: (workspaceId: string) => ["channels", workspaceId] as const,
   /** Channel-level history: top-level messages and replies also sent to the channel. */
   messages: (channelId: string) => ["messages", channelId] as const,
   /** Replies of one thread. */
   thread: (parentId: number) => ["thread", parentId] as const,
   message: (id: number) => ["message", id] as const,
-  saved: ["saved"] as const,
+  saved: (workspaceId: string) => ["saved", workspaceId] as const,
 };
 
 type Pages = InfiniteData<MessagePage, number | undefined>;
@@ -76,7 +87,7 @@ export function removeMessage(qc: QueryClient, channelId: string, id: number) {
  * replaces. The two can arrive in either order.
  */
 export function upsertChannel(qc: QueryClient, channel: ChannelSummary | Channel, isMember?: boolean) {
-  qc.setQueryData<Channel[]>(keys.channels, (list) => {
+  qc.setQueryData<Channel[]>(keys.channels(channel.workspaceId), (list) => {
     if (!list) return list;
     const existing = list.find((c) => c.id === channel.id);
     const next: Channel =
@@ -94,20 +105,31 @@ export function upsertChannel(qc: QueryClient, channel: ChannelSummary | Channel
   });
 }
 
+/** Channel ids are global, so the change applies to whichever workspace list holds it. */
 export function updateChannel(qc: QueryClient, id: string, update: (c: Channel) => Channel) {
-  qc.setQueryData<Channel[]>(keys.channels, (list) => list?.map((c) => (c.id === id ? update(c) : c)));
+  qc.setQueriesData<Channel[]>({ queryKey: ["channels"] }, (list) => list?.map((c) => (c.id === id ? update(c) : c)));
 }
 
-export function addMember(qc: QueryClient, member: Member) {
-  qc.setQueryData<Member[]>(keys.users, (list) =>
-    list && !list.some((u) => u.id === member.id)
-      ? [...list, member].sort((a, b) => a.displayName.localeCompare(b.displayName))
-      : list,
+export function upsertMember(qc: QueryClient, workspaceId: string, member: Member) {
+  qc.setQueryData<Member[]>(keys.members(workspaceId), (list) =>
+    list ? [...list.filter((u) => u.id !== member.id), member].sort((a, b) => a.displayName.localeCompare(b.displayName)) : list,
   );
 }
 
+export function removeMember(qc: QueryClient, workspaceId: string, userId: string) {
+  qc.setQueryData<Member[]>(keys.members(workspaceId), (list) => list?.filter((u) => u.id !== userId));
+}
+
+/** Everything cached for one workspace, e.g. after leaving it. */
+export function forgetWorkspace(qc: QueryClient, workspaceId: string) {
+  for (const key of [keys.channels(workspaceId), keys.members(workspaceId), keys.presence(workspaceId), keys.saved(workspaceId)]) {
+    qc.removeQueries({ queryKey: key });
+  }
+  qc.setQueryData<Workspace[]>(keys.workspaces, (list) => list?.filter((w) => w.id !== workspaceId));
+}
+
 export function setPresence(qc: QueryClient, userId: string, status: PresenceStatus) {
-  qc.setQueryData<PresenceMap>(keys.presence, (map) => {
+  qc.setQueriesData<PresenceMap>({ queryKey: ["presence"] }, (map) => {
     if (!map) return map;
     const next = { ...map };
     if (status === "offline") delete next[userId];

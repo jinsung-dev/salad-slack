@@ -4,20 +4,43 @@ import { expect, test, type Browser, type Page } from "@playwright/test";
 
 const run = Date.now().toString(36);
 
-/** Signs in through the Google button; the dev server's fake provider asks for an account. */
-async function signInAs(page: Page, name: string) {
-  await page.goto("/");
+/** Signs in through the Google button; the server's fake provider asks for an account. */
+async function signInAs(page: Page, name: string, path = "/") {
+  await page.goto(path);
   await page.getByRole("link", { name: "Google 계정으로 로그인" }).click();
   await page.getByPlaceholder("이메일").fill(`${name}-${run}@example.test`);
   await page.getByPlaceholder("이름").fill(name);
   await page.getByRole("button", { name: "계속" }).click();
-  await expect(page.locator(".status-open")).toBeVisible();
+  await expect(page).not.toHaveURL(/\/login|127\.0\.0\.1:\d+\/authorize/);
 }
 
-async function signUp(browser: Browser, name: string): Promise<Page> {
+async function newPerson(browser: Browser, name: string, path = "/"): Promise<Page> {
   const page = await (await browser.newContext()).newPage();
-  await signInAs(page, name);
+  await signInAs(page, name, path);
   return page;
+}
+
+/**
+ * People in one new workspace: the first creates it with the test email domain,
+ * the rest join it from onboarding, the way colleagues do.
+ */
+async function team(browser: Browser, workspace: string, ...names: string[]): Promise<Page[]> {
+  const pages: Page[] = [];
+  for (const [i, name] of names.entries()) {
+    const page = await newPerson(browser, name);
+    await expect(page).toHaveURL(/\/new$/);
+    if (i === 0) {
+      await page.getByPlaceholder(/^팀 이름/).fill(workspace);
+      await page.getByPlaceholder(/^회사 이메일 도메인/).fill("example.test");
+      await page.getByRole("button", { name: "만들기" }).click();
+    } else {
+      await page.locator(".joinable li").filter({ hasText: workspace }).getByRole("button", { name: "참여" }).click();
+    }
+    await expect(page.locator(".status-open")).toBeVisible();
+    await expect(page.locator(".switcher-button")).toContainText(workspace);
+    pages.push(page);
+  }
+  return pages;
 }
 
 async function createChannel(page: Page, name: string, isPrivate = false) {
@@ -38,8 +61,7 @@ const message = (page: Page, text: string) => page.locator(".main .message").fil
 
 test("two users chat in realtime with unread state", async ({ browser }) => {
   const channel = `e2e-${run}`;
-  const alice = await signUp(browser, `alice${run}`);
-  const bob = await signUp(browser, `bob${run}`);
+  const [alice, bob] = await team(browser, `ws1-${run}`, `alice${run}`, `bob${run}`);
 
   await createChannel(alice, channel);
   // Bob sees the new channel arrive over the socket, previews it, and joins.
@@ -73,8 +95,7 @@ test("two users chat in realtime with unread state", async ({ browser }) => {
 
 test("threads, reactions, edits and typing", async ({ browser }) => {
   const channel = `thr-${run}`;
-  const alice = await signUp(browser, `alicet${run}`);
-  const bob = await signUp(browser, `bobt${run}`);
+  const [alice, bob] = await team(browser, `ws2-${run}`, `alicet${run}`, `bobt${run}`);
   await createChannel(alice, channel);
   await bob.getByRole("link", { name: `# ${channel}` }).click();
   await bob.getByRole("button", { name: "채널 참여" }).click();
@@ -120,8 +141,7 @@ test("threads, reactions, edits and typing", async ({ browser }) => {
 
 test("private channels and direct messages", async ({ browser }) => {
   const secret = `sec-${run}`;
-  const alice = await signUp(browser, `alicep${run}`);
-  const bob = await signUp(browser, `bobp${run}`);
+  const [alice, bob] = await team(browser, `ws3-${run}`, `alicep${run}`, `bobp${run}`);
 
   await createChannel(alice, secret, true);
   await expect(alice.locator(".channel-header h1")).toContainText("🔒");
@@ -150,7 +170,7 @@ test("private channels and direct messages", async ({ browser }) => {
 
 test("signing out returns to sign-in, also for other tabs of the session", async ({ browser }) => {
   const name = `out${run}`;
-  const page = await signUp(browser, name);
+  const [page] = await team(browser, `ws-out-${run}`, name);
   const otherTab = await page.context().newPage();
   await otherTab.goto("/");
   await expect(otherTab.locator(".status-open")).toBeVisible();
@@ -158,7 +178,7 @@ test("signing out returns to sign-in, also for other tabs of the session", async
   await otherTab.getByRole("link", { name: `# out-${run}` }).click();
 
   await page.getByRole("button", { name: "로그아웃" }).click();
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/login(\?|$)/);
   await expect(page.getByRole("link", { name: "Google 계정으로 로그인" })).toBeVisible();
   await expect(page.locator(".sidebar")).toHaveCount(0);
 
@@ -168,13 +188,13 @@ test("signing out returns to sign-in, also for other tabs of the session", async
 
   // Signing back in with the same account shows the same workspace.
   await signInAs(page, name);
+  await expect(page.locator(".status-open")).toBeVisible();
   await expect(page.getByRole("link", { name: `# out-${run}` })).toBeVisible();
 });
 
 test("files, search and notification settings", async ({ browser }) => {
   const channel = `p3-${run}`;
-  const alice = await signUp(browser, `alicef${run}`);
-  const bob = await signUp(browser, `bobf${run}`);
+  const [alice, bob] = await team(browser, `ws4-${run}`, `alicef${run}`, `bobf${run}`);
   await createChannel(alice, channel);
   await bob.getByRole("link", { name: `# ${channel}` }).click();
   await bob.getByRole("button", { name: "채널 참여" }).click();
@@ -190,7 +210,8 @@ test("files, search and notification settings", async ({ browser }) => {
   const shared = message(bob, `배포 자료 ${run}`);
   await expect(shared.locator(".file-image img")).toHaveAttribute("alt", "화면.png");
   await expect(shared.locator(".file-card")).toContainText("회의록.txt");
-  expect(await shared.locator(".file-image img").evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(1);
+  // The image loads lazily; wait until the browser has decoded it.
+  await expect.poll(() => shared.locator(".file-image img").evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(1);
 
   // Bob searches with a partial word and opens the result beside the channel.
   await bob.getByRole("searchbox", { name: "메시지 검색" }).fill(`배포 ${run}`);
@@ -214,4 +235,101 @@ test("files, search and notification settings", async ({ browser }) => {
   await bob.getByRole("button", { name: "설정" }).click();
   await expect(bob.getByRole("dialog", { name: "설정" })).toContainText("데스크톱 알림");
   await bob.screenshot({ path: "e2e/artifacts/phase3.png" });
+});
+
+test("workspaces: guest invite, webhook, and switching", async ({ browser, request }) => {
+  const [owner] = await team(browser, `ws5-${run}`, `owner${run}`);
+  await createChannel(owner, `general-${run}`);
+  await createChannel(owner, `project-${run}`);
+
+  // The owner makes a guest invite link in the admin page.
+  await owner.locator(".switcher-button").click();
+  await owner.getByRole("menuitem", { name: "워크스페이스 관리" }).click();
+  await owner.getByLabel("초대 역할").selectOption("guest");
+  await owner.getByRole("button", { name: "초대 링크 만들기" }).click();
+  const inviteUrl = await owner.getByLabel("초대 링크").inputValue();
+  expect(inviteUrl).toContain("/invite/");
+
+  // The guest opens it signed out, signs in, comes back to it, and joins.
+  const guest = await newPerson(browser, `guest${run}`, new URL(inviteUrl).pathname);
+  await expect(guest.getByRole("heading", { name: `ws5-${run}` })).toBeVisible();
+  await guest.getByRole("button", { name: "참여하기" }).click();
+  await expect(guest.locator(".switcher-button")).toContainText(`ws5-${run}`);
+  await expect(guest.getByText("아직 참여한 대화가 없습니다")).toBeVisible();
+  await expect(guest.getByRole("button", { name: "+ 채널 만들기" })).toHaveCount(0);
+  await expect(guest.getByRole("link", { name: `# general-${run}` })).toHaveCount(0);
+
+  // A webhook posts into the project channel.
+  await owner.getByLabel("웹훅 채널").selectOption({ label: `#project-${run}` });
+  await owner.getByLabel("웹훅 이름").fill("배포 알림");
+  await owner.getByRole("button", { name: "웹훅 만들기" }).click();
+  const hookUrl = await owner.getByLabel("웹훅 URL").inputValue();
+  await owner.getByRole("link", { name: /돌아가기/ }).click();
+  await owner.getByRole("link", { name: `# project-${run}` }).click();
+  const res = await request.post(new URL(hookUrl).pathname, { data: { text: `v1.2 배포 완료 ${run}` } });
+  expect(res.status()).toBe(201);
+  const posted = message(owner, `v1.2 배포 완료 ${run}`);
+  await expect(posted).toContainText("배포 알림");
+
+  // Adding the guest to the project channel makes it appear for them, live.
+  await owner.getByRole("button", { name: "사람 추가" }).click();
+  await owner.getByPlaceholder("이름으로 찾기").fill(`guest${run}`);
+  await owner.getByLabel(`guest${run}`).check();
+  await owner.getByRole("button", { name: "추가", exact: true }).click();
+  await guest.getByRole("link", { name: `# project-${run}` }).click();
+  await expect(message(guest, `v1.2 배포 완료 ${run}`)).toBeVisible();
+
+  // A second workspace is a separate space; switching back restores the first.
+  await owner.locator(".switcher-button").click();
+  await owner.getByRole("menuitem", { name: "+ 워크스페이스 추가" }).click();
+  await owner.getByPlaceholder(/^팀 이름/).fill(`other-${run}`);
+  await owner.getByRole("button", { name: "만들기" }).click();
+  await expect(owner.locator(".switcher-button")).toContainText(`other-${run}`);
+  await expect(owner.getByRole("link", { name: `# project-${run}` })).toHaveCount(0);
+  await owner.locator(".switcher-button").click();
+  await owner.getByRole("menuitem", { name: `ws5-${run}` }).click();
+  await expect(owner.getByRole("link", { name: `# project-${run}` })).toBeVisible();
+  await owner.screenshot({ path: "e2e/artifacts/phase4.png" });
+});
+
+test("an outside guest invited to one channel lands in it and sees nothing else", async ({ browser }) => {
+  const [owner] = await team(browser, `ws6-${run}`, `lead${run}`);
+  await createChannel(owner, `internal-${run}`);
+  await send(owner, `#internal-${run}에 메시지 보내기`, "내부 공지");
+  await createChannel(owner, `partner-${run}`, true);
+  await send(owner, `#partner-${run}에 메시지 보내기`, `킥오프 자료 ${run}`);
+
+  await owner.getByRole("button", { name: "외부인 초대" }).click();
+  await owner.getByLabel("게스트 기간").selectOption({ label: "30일" });
+  await owner.getByRole("button", { name: "초대 링크 만들기" }).click();
+  const link = await owner.getByLabel("채널 초대 링크").inputValue();
+  await owner.getByRole("button", { name: "닫기" }).click();
+
+  const partner = await newPerson(browser, `partner${run}`, new URL(link).pathname);
+  await expect(partner.getByText(`#partner-${run}`)).toBeVisible();
+  await expect(partner.getByText("30일 뒤 자동으로 나가게 됩니다")).toBeVisible();
+  await partner.getByRole("button", { name: "참여하기" }).click();
+  await expect(partner.locator(".channel-header h1")).toContainText(`partner-${run}`);
+  await expect(message(partner, `킥오프 자료 ${run}`)).toBeVisible();
+  await expect(partner.getByRole("link", { name: `# internal-${run}` })).toHaveCount(0);
+  await expect(partner.getByRole("button", { name: "외부인 초대" })).toHaveCount(0);
+
+  await send(partner, `#partner-${run}에 메시지 보내기`, "확인했습니다");
+  const fromGuest = message(owner, "확인했습니다");
+  await expect(fromGuest.locator(".guest-badge")).toHaveText("게스트");
+  await owner.screenshot({ path: "e2e/artifacts/channel-guest.png" });
+});
+
+test("moving between screens keeps one realtime connection", async ({ browser }) => {
+  const [page] = await team(browser, `ws7-${run}`, `nav${run}`);
+  await createChannel(page, `nav-${run}`);
+  let sockets = 0;
+  page.on("websocket", () => sockets++);
+  await page.getByRole("link", { name: "저장한 메시지" }).click();
+  await page.getByRole("link", { name: `# nav-${run}` }).click();
+  await page.locator(".switcher-button").click();
+  await page.getByRole("menuitem", { name: "워크스페이스 관리" }).click();
+  await page.getByRole("link", { name: /돌아가기/ }).click();
+  await expect(page.locator(".status-open")).toBeVisible();
+  expect(sockets).toBe(0);
 });

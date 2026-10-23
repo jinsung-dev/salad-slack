@@ -6,6 +6,7 @@ import { ApiError, api } from "../api";
 import { flattenPages, keys } from "../cache";
 import { channelLabel, useDirectory } from "../directory";
 import { setActiveThread } from "../realtime";
+import { workspacePath } from "../workspace";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { MessageRow } from "./MessageRow";
@@ -33,12 +34,12 @@ export function ThreadPanel({ channel, parentId, me }: { channel: Channel; paren
     const mark = async () => {
       if (document.visibilityState !== "visible") return;
       await api.markThreadRead(parentId);
-      void qc.invalidateQueries({ queryKey: keys.channels });
+      void qc.invalidateQueries({ queryKey: keys.channels(channel.workspaceId) });
     };
     void mark();
   }, [channel.isMember, parentId, newestId, parent.data, qc]);
 
-  const close = `/c/${channel.id}`;
+  const close = workspacePath(channel.workspaceId, `/c/${channel.id}`);
   const gone = parent.error instanceof ApiError && parent.error.status === 404;
 
   return (

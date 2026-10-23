@@ -1,14 +1,15 @@
 import { useState, type FormEvent } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router";
 import { MAX_DM_MEMBERS, channelNameSchema, type Channel, type User } from "@chatter/shared";
 import { ApiError, api } from "../api";
-import { upsertChannel } from "../cache";
+import { keys, upsertChannel } from "../cache";
 import { endSession } from "../session";
 import { channelLabel, useDirectory } from "../directory";
 import { useConnectionStatus } from "../realtime";
 import { Avatar, PresenceDot, UserPicker } from "./People";
 import { SettingsDialog } from "./Settings";
+import { useCurrentWorkspace, workspacePath } from "../workspace";
 
 const STATUS_LABEL = { open: "연결됨", connecting: "연결 중…", closed: "재연결 대기" } as const;
 
@@ -17,6 +18,9 @@ export function Sidebar({ me, channels, activeId }: { me: User; channels: Channe
   const navigate = useNavigate();
   const status = useConnectionStatus();
   const { names } = useDirectory();
+  const workspace = useCurrentWorkspace();
+  const at = (rest: string) => workspacePath(workspace.id, rest);
+  const isGuest = workspace.role === "guest";
   const [creating, setCreating] = useState(false);
   const [startingDm, setStartingDm] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -33,20 +37,20 @@ export function Sidebar({ me, channels, activeId }: { me: User; channels: Channe
     const name = channelNameSchema.safeParse(form.get("name"));
     if (!name.success) return setError(name.error.issues[0]?.message ?? "잘못된 이름");
     try {
-      const channel = await api.createChannel({ name: name.data, isPrivate: form.get("private") === "on" });
+      const channel = await api.createChannel(workspace.id, { name: name.data, isPrivate: form.get("private") === "on" });
       upsertChannel(qc, channel);
       setCreating(false);
       setError(null);
-      navigate(`/c/${channel.id}`);
+      navigate(at(`/c/${channel.id}`));
     } catch (err) {
       setError(err instanceof ApiError && err.code === "channel_name_taken" ? "이미 있는 채널 이름입니다." : "생성 실패");
     }
   };
 
   const startDm = async (userIds: string[]) => {
-    const channel = await api.createDm(userIds);
+    const channel = await api.createDm(workspace.id, userIds);
     upsertChannel(qc, channel);
-    navigate(`/c/${channel.id}`);
+    navigate(at(`/c/${channel.id}`));
   };
 
   const logout = async () => {
@@ -63,7 +67,7 @@ export function Sidebar({ me, channels, activeId }: { me: User; channels: Channe
     return (
       <li key={c.id}>
         <Link
-          to={`/c/${c.id}`}
+          to={at(`/c/${c.id}`)}
           className={[
             "channel-link",
             c.id === activeId && "active",
@@ -85,7 +89,7 @@ export function Sidebar({ me, channels, activeId }: { me: User; channels: Channe
   return (
     <aside className="sidebar">
       <header className="sidebar-header">
-        <strong>Chatter</strong>
+        <WorkspaceSwitcher />
         <span className={`status status-${status}`} title={STATUS_LABEL[status]} />
       </header>
 
@@ -95,20 +99,20 @@ export function Sidebar({ me, channels, activeId }: { me: User; channels: Channe
         onSubmit={(e) => {
           e.preventDefault();
           const q = String(new FormData(e.currentTarget).get("q") ?? "").trim();
-          if (q) navigate(`/search?q=${encodeURIComponent(q)}`);
+          if (q) navigate(at(`/search?q=${encodeURIComponent(q)}`));
         }}
       >
         <input name="q" type="search" placeholder="메시지 검색" aria-label="메시지 검색" />
       </form>
 
       <nav>
-        <Link to="/saved" className="channel-link saved-link">
+        <Link to={at("/saved")} className="channel-link saved-link">
           <span className="hash">🔖</span>
           <span className="name">저장한 메시지</span>
         </Link>
         <h2>채널</h2>
         <ul>{joined.map(item)}</ul>
-        {creating ? (
+        {isGuest ? null : creating ? (
           <form className="new-channel" onSubmit={create}>
             <input name="name" placeholder="새-채널-이름 (예: 개발팀)" autoFocus />
             <label className="hint">
@@ -130,9 +134,11 @@ export function Sidebar({ me, channels, activeId }: { me: User; channels: Channe
 
         <h2>다이렉트 메시지</h2>
         <ul>{dms.map(item)}</ul>
-        <button className="add" onClick={() => setStartingDm(true)}>
-          + 새 메시지
-        </button>
+        {!isGuest && (
+          <button className="add" onClick={() => setStartingDm(true)}>
+            + 새 메시지
+          </button>
+        )}
 
         {browsable.length > 0 && (
           <>
@@ -166,5 +172,45 @@ export function Sidebar({ me, channels, activeId }: { me: User; channels: Channe
         />
       )}
     </aside>
+  );
+}
+
+const ROLE_LABEL = { owner: "소유자", admin: "관리자", member: "멤버", guest: "게스트" } as const;
+
+/** The current workspace's name; opens a menu to switch, start one, or manage this one. */
+function WorkspaceSwitcher() {
+  const navigate = useNavigate();
+  const current = useCurrentWorkspace();
+  const workspaces = useQuery({ queryKey: keys.workspaces, queryFn: api.workspaces });
+  const [open, setOpen] = useState(false);
+  const go = (path: string) => {
+    setOpen(false);
+    navigate(path);
+  };
+  return (
+    <div className="switcher">
+      <button className="switcher-button" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <strong>{current.name}</strong> ▾
+      </button>
+      {open && (
+        <div className="switcher-menu" role="menu" onMouseLeave={() => setOpen(false)}>
+          <p className="muted hint">{ROLE_LABEL[current.role]}</p>
+          <button role="menuitem" onClick={() => go(workspacePath(current.id, "/admin"))}>
+            {current.role === "owner" || current.role === "admin" ? "워크스페이스 관리" : "멤버 보기"}
+          </button>
+          <hr />
+          {(workspaces.data ?? [])
+            .filter((w) => w.id !== current.id)
+            .map((w) => (
+              <button key={w.id} role="menuitem" onClick={() => go(workspacePath(w.id))}>
+                {w.name}
+              </button>
+            ))}
+          <button role="menuitem" onClick={() => go("/new")}>
+            + 워크스페이스 추가
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

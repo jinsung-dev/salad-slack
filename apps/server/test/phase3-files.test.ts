@@ -1,12 +1,13 @@
 import { readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { Channel, FileRef, Message, MessagePage } from "@chatter/shared";
-import { signIn, uniqueName, useCluster, type Client } from "./helpers";
+import { signIn, uniqueName, useCluster, type Client, useWorkspace } from "./helpers";
 
 // Small limit so the oversize case needs no large payload.
 const MAX = 64 * 1024;
 const { urls, fileStorageDir } = useCluster(1, { maxFileBytes: MAX });
 const base = () => urls[0]!;
+const home = useWorkspace(base);
 
 // A 1×1 PNG.
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
@@ -23,8 +24,8 @@ const send = (who: Client, channelId: string, body: Record<string, unknown>) =>
 
 describe("file attachments", () => {
   it("keeps an upload private until attached, then serves it to readers of the conversation only", async () => {
-    const [alice, bob, carol] = [await signIn(base(), "alice"), await signIn(base(), "bob"), await signIn(base(), "carol")];
-    const room = (await alice.call<Channel>("POST", "/api/channels", { name: uniqueName(), isPrivate: true })).body;
+    const [alice, bob, carol] = [await home.member("alice"), await home.member("bob"), await home.member("carol")];
+    const room = (await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName(), isPrivate: true })).body;
     await alice.call("POST", `/api/channels/${room.id}/members`, { userIds: [bob.id] });
 
     const up = await upload(alice, room.id, "스크린샷.png", "image/png", PNG);
@@ -49,8 +50,8 @@ describe("file attachments", () => {
   });
 
   it("serves anything but raster images as a sandboxed download", async () => {
-    const alice = await signIn(base(), "alice");
-    const room = (await alice.call<Channel>("POST", "/api/channels", { name: uniqueName() })).body;
+    const alice = await home.member("alice");
+    const room = (await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName() })).body;
     for (const [name, type] of [
       ["evil.html", "text/html"],
       ["logo.svg", "image/svg+xml"],
@@ -66,9 +67,9 @@ describe("file attachments", () => {
   });
 
   it("attaches only the sender's own unattached uploads to that conversation, all or nothing", async () => {
-    const [alice, bob] = [await signIn(base(), "alice"), await signIn(base(), "bob")];
-    const room = (await alice.call<Channel>("POST", "/api/channels", { name: uniqueName() })).body;
-    const other = (await alice.call<Channel>("POST", "/api/channels", { name: uniqueName() })).body;
+    const [alice, bob] = [await home.member("alice"), await home.member("bob")];
+    const room = (await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName() })).body;
+    const other = (await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName() })).body;
     await bob.call("POST", `/api/channels/${room.id}/join`);
 
     const mine = (await upload(alice, room.id, "a.txt", "text/plain", "a")).body;
@@ -85,8 +86,8 @@ describe("file attachments", () => {
   });
 
   it("deletes attachments with their message and refuses oversized uploads without leaving partial files", async () => {
-    const alice = await signIn(base(), "alice");
-    const room = (await alice.call<Channel>("POST", "/api/channels", { name: uniqueName() })).body;
+    const alice = await home.member("alice");
+    const room = (await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName() })).body;
     const up = (await upload(alice, room.id, "doc.txt", "text/plain", "hello")).body;
     const msg = (await send(alice, room.id, { text: "doc", fileIds: [up.id] })).body;
     const before = readdirSync(fileStorageDir).length;

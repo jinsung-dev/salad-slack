@@ -53,7 +53,11 @@ export interface PushPayload {
 
 const PREVIEW_CHARS = 140;
 
-export function pushPayload(message: Message, conversation: { kind: ConversationKind; name: string | null }, names: ReadonlyMap<string, string>): PushPayload {
+export function pushPayload(
+  message: Message,
+  conversation: { workspaceId: string; kind: ConversationKind; name: string | null },
+  names: ReadonlyMap<string, string>,
+): PushPayload {
   const text = message.text
     .replaceAll(CHANNEL_MENTION, "@channel")
     .replace(/<@([0-9a-f-]{36})>/g, (_, id: string) => `@${names.get(id) ?? "알 수 없음"}`)
@@ -66,7 +70,7 @@ export function pushPayload(message: Message, conversation: { kind: Conversation
   return {
     title: conversation.kind === "dm" ? author : `#${conversation.name}${inThread ? " 스레드" : ""}`,
     body: conversation.kind === "dm" ? preview : `${author}: ${preview}`,
-    url: `/c/${message.channelId}${inThread ? `/t/${message.parentId}` : ""}`,
+    url: `/w/${conversation.workspaceId}/c/${message.channelId}${inThread ? `/t/${message.parentId}` : ""}`,
     tag: `message-${message.id}`,
   };
 }
@@ -83,7 +87,7 @@ export type PushSender = (target: PushTarget, payload: string) => Promise<{ gone
 /** Sends push notifications for a new message to everyone who should get one. */
 export async function notifyNewMessage(db: Db, hub: RealtimeHub, send: PushSender, message: Message, now = new Date()) {
   const [conversation] = await db
-    .select({ kind: channels.kind, name: channels.name })
+    .select({ workspaceId: channels.workspaceId, kind: channels.kind, name: channels.name })
     .from(channels)
     .where(eq(channels.id, message.channelId));
   if (!conversation) return;
