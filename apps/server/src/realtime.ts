@@ -1,0 +1,179 @@
+import { randomUUID } from "node:crypto";
+import { Redis } from "ioredis";
+import { clientEvent, type ClientEvent, type PresenceMap, type PresenceStatus, type ServerEvent } from "@chatter/shared";
+import type { WebSocket } from "ws";
+
+const HEARTBEAT_MS = 30_000;
+const PRESENCE_REFRESH_MS = 20_000;
+const PRESENCE_TTL_S = 60;
+
+export type Target = { users: Iterable<string> } | { all: true; except?: Iterable<string> };
+type WireTarget = { users: string[] } | { all: true; except: string[] };
+
+interface SocketState {
+  userId: string;
+  active: boolean;
+  alive: boolean;
+}
+
+export type ClientEventHandler = (userId: string, event: Exclude<ClientEvent, { type: "presence" }>) => void;
+
+/**
+ * Cluster-wide fan-out of server events plus presence.
+ *
+ * Every node publishes events to one Redis channel and delivers the ones
+ * addressed to its own sockets, so a send reaches users on any node. Presence
+ * is each node's own socket counts, rewritten whole into a hash that expires
+ * if the node dies; a user's status is the union across live nodes.
+ */
+export class RealtimeHub {
+  private readonly nodeId = randomUUID();
+  private readonly sockets = new Map<WebSocket, SocketState>();
+  private readonly pub: Redis;
+  private readonly sub: Redis;
+  private readonly channel: string;
+  private readonly nodeKey: string;
+  private readonly timers: NodeJS.Timeout[] = [];
+  private onClientEvent: ClientEventHandler = () => {};
+
+  private constructor(
+    redisUrl: string,
+    private readonly prefix: string,
+    private readonly log: (msg: string, err: unknown) => void,
+  ) {
+    this.pub = new Redis(redisUrl, { lazyConnect: true });
+    this.sub = new Redis(redisUrl, { lazyConnect: true });
+    this.channel = `${prefix}events`;
+    this.nodeKey = `${prefix}presence:node:${this.nodeId}`;
+  }
+
+  static async start(redisUrl: string, prefix: string, log: (msg: string, err: unknown) => void) {
+    const hub = new RealtimeHub(redisUrl, prefix, log);
+    await Promise.all([hub.pub.connect(), hub.sub.connect()]);
+    hub.sub.on("message", (_channel, raw) => hub.deliver(raw));
+    await hub.sub.subscribe(hub.channel);
+    hub.timers.push(setInterval(() => hub.sweep(), HEARTBEAT_MS), setInterval(() => void hub.syncPresence(), PRESENCE_REFRESH_MS));
+    for (const t of hub.timers) t.unref();
+    return hub;
+  }
+
+  handleClientEvents(handler: ClientEventHandler) {
+    this.onClientEvent = handler;
+  }
+
+  add(userId: string, socket: WebSocket): void {
+    const state: SocketState = { userId, active: true, alive: true };
+    this.sockets.set(socket, state);
+    socket.on("pong", () => (state.alive = true));
+    socket.on("message", (raw) => this.receive(state, String(raw)));
+    socket.on("close", () => {
+      this.sockets.delete(socket);
+      void this.presenceChanged(userId);
+    });
+    socket.send(JSON.stringify({ type: "hello", userId } satisfies ServerEvent));
+    void this.presenceChanged(userId);
+  }
+
+  publish(target: Target, event: ServerEvent): void {
+    const wire: WireTarget =
+      "users" in target ? { users: [...target.users] } : { all: true, except: [...(target.except ?? [])] };
+    if ("users" in wire && wire.users.length === 0) return;
+    this.pub.publish(this.channel, JSON.stringify({ target: wire, event })).catch((err) => this.log("publish failed", err));
+  }
+
+  async presence(): Promise<PresenceMap> {
+    const result: PresenceMap = {};
+    for (const hash of await this.nodeHashes()) {
+      for (const [field, count] of Object.entries(hash)) {
+        if (field.startsWith("a:") || Number(count) <= 0) continue;
+        const active = Number(hash[`a:${field}`] ?? 0) > 0;
+        if (active || result[field] === undefined) result[field] = active ? "active" : "away";
+      }
+    }
+    return result;
+  }
+
+  async close(): Promise<void> {
+    for (const t of this.timers) clearInterval(t);
+    for (const socket of this.sockets.keys()) socket.terminate();
+    this.sockets.clear();
+    await this.pub.del(this.nodeKey).catch(() => {});
+    this.sub.disconnect();
+    this.pub.disconnect();
+  }
+
+  private receive(state: SocketState, raw: string) {
+    let parsed: ClientEvent;
+    try {
+      const result = clientEvent.safeParse(JSON.parse(raw));
+      if (!result.success) return;
+      parsed = result.data;
+    } catch {
+      return;
+    }
+    if (parsed.type === "presence") {
+      const active = parsed.status === "active";
+      if (state.active === active) return;
+      state.active = active;
+      void this.presenceChanged(state.userId);
+      return;
+    }
+    this.onClientEvent(state.userId, parsed);
+  }
+
+  private deliver(raw: string) {
+    const { target, event } = JSON.parse(raw) as { target: WireTarget; event: ServerEvent };
+    const payload = JSON.stringify(event);
+    const users = "users" in target ? new Set(target.users) : null;
+    const except = "all" in target ? new Set(target.except) : null;
+    for (const [socket, { userId }] of this.sockets) {
+      if (users ? users.has(userId) : !except!.has(userId)) socket.send(payload);
+    }
+  }
+
+  private async presenceChanged(userId: string) {
+    try {
+      await this.syncPresence();
+      const status: PresenceStatus = (await this.presence())[userId] ?? "offline";
+      this.publish({ all: true }, { type: "presence.changed", userId, status });
+    } catch (err) {
+      this.log("presence update failed", err);
+    }
+  }
+
+  /** Local sockets are the truth for this node; rewrite its hash whole. */
+  private async syncPresence() {
+    const counts = new Map<string, number>();
+    for (const { userId, active } of this.sockets.values()) {
+      counts.set(userId, (counts.get(userId) ?? 0) + 1);
+      if (active) counts.set(`a:${userId}`, (counts.get(`a:${userId}`) ?? 0) + 1);
+    }
+    const tx = this.pub.multi().del(this.nodeKey);
+    if (counts.size > 0) tx.hset(this.nodeKey, Object.fromEntries(counts)).expire(this.nodeKey, PRESENCE_TTL_S);
+    await tx.exec();
+  }
+
+  private async nodeHashes(): Promise<Record<string, string>[]> {
+    const keys: string[] = [];
+    let cursor = "0";
+    do {
+      const [next, batch] = await this.pub.scan(cursor, "MATCH", `${this.prefix}presence:node:*`, "COUNT", 100);
+      cursor = next;
+      keys.push(...batch);
+    } while (cursor !== "0");
+    if (keys.length === 0) return [];
+    const replies = await keys.reduce((p, key) => p.hgetall(key), this.pub.pipeline()).exec();
+    return (replies ?? []).map(([, value]) => (value ?? {}) as Record<string, string>);
+  }
+
+  private sweep(): void {
+    for (const [socket, state] of this.sockets) {
+      if (!state.alive) {
+        socket.terminate();
+        continue;
+      }
+      state.alive = false;
+      socket.ping();
+    }
+  }
+}
