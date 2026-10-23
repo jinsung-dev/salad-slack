@@ -27,6 +27,18 @@ export const env = {
   oidcClientSecret: process.env.OIDC_CLIENT_SECRET || undefined,
   // The origin people open, e.g. https://chatter.example.com; must match the provider's redirect URI.
   publicUrl: process.env.PUBLIC_URL || undefined,
+  // Attachment bytes on local disk (one server); shared storage is needed for several.
+  fileStorageDir: process.env.FILE_STORAGE_DIR ?? fileURLToPath(new URL("../../../data/uploads", import.meta.url)),
+  maxFileBytes: Number(process.env.FILE_MAX_BYTES ?? 25 * 1024 * 1024),
+  // Web Push keys (generate with `pnpm --filter @chatter/server vapid`); unset disables push.
+  vapid:
+    process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY
+      ? {
+          subject: process.env.VAPID_SUBJECT ?? "mailto:admin@example.com",
+          publicKey: process.env.VAPID_PUBLIC_KEY,
+          privateKey: process.env.VAPID_PRIVATE_KEY,
+        }
+      : null,
   // The built web app, served from the same origin when present.
   webDist: process.env.WEB_DIST ?? fileURLToPath(new URL("../../web/dist", import.meta.url)),
 };

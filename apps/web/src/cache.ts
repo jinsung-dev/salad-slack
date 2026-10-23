@@ -1,5 +1,5 @@
 import type { InfiniteData, QueryClient, QueryKey } from "@tanstack/react-query";
-import type { Channel, ChannelSummary, Member, Message, MessagePage, PresenceMap, PresenceStatus } from "@chatter/shared";
+import { defaultNotifyLevel, type Channel, type ChannelSummary, type Member, type Message, type MessagePage, type PresenceMap, type PresenceStatus } from "@chatter/shared";
 
 // Single owner of client-side cache mutations, shared by realtime events and
 // local REST responses so both paths deduplicate the same way.
@@ -14,6 +14,7 @@ export const keys = {
   /** Replies of one thread. */
   thread: (parentId: number) => ["thread", parentId] as const,
   message: (id: number) => ["message", id] as const,
+  saved: ["saved"] as const,
 };
 
 type Pages = InfiniteData<MessagePage, number | undefined>;
@@ -84,6 +85,7 @@ export function upsertChannel(qc: QueryClient, channel: ChannelSummary | Channel
         : {
             unreadCount: 0,
             mentionCount: 0,
+            notify: defaultNotifyLevel(channel.kind),
             ...existing,
             ...channel,
             isMember: isMember ?? existing?.isMember ?? false,

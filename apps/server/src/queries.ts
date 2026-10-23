@@ -1,7 +1,9 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { parseMentions, type Channel, type ChannelSummary, type Message, type Reaction } from "@chatter/shared";
+import { parseMentions, type Channel, type ChannelSummary, type FileRef, type Message, type NotifyLevel, type Reaction } from "@chatter/shared";
 import type { Db } from "./db/client";
-import { channelMembers, channels, messages, users } from "./db/schema";
+import { channelMembers, channels, files, messages, users } from "./db/schema";
+import { fileRef } from "./files";
+import { effectiveLevel } from "./notify";
 
 // Single owner of the Channel and Message response shapes. Routes and realtime
 // events both build them here so a REST response and the event for the same
@@ -54,12 +56,14 @@ export async function listChannels(db: Db, me: string, onlyId?: string): Promise
     name: string | null;
     topic: string;
     is_member: boolean;
+    notify: NotifyLevel | null;
     member_ids: string[] | null;
     unread_count: number;
     mention_count: number;
   }>(sql`
     select c.id, c.kind, c.name, c.topic,
            (cm.user_id is not null) as is_member,
+           cm.notify,
            case when c.kind = 'dm' then (
              select array_agg(user_id::text order by user_id::text) from channel_members where channel_id = c.id
            ) end as member_ids,
@@ -86,6 +90,7 @@ export async function listChannels(db: Db, me: string, onlyId?: string): Promise
     isMember: r.is_member,
     unreadCount: r.unread_count,
     mentionCount: r.mention_count,
+    notify: effectiveLevel(r.notify, r.kind),
   }));
 }
 
@@ -113,6 +118,18 @@ export async function loadMessages(db: Db, ids: number[]): Promise<Message[]> {
       select parent_id, user_id, max(id) as last from messages
       where parent_id in ${ids} and deleted_at is null group by parent_id, user_id
     ) t order by parent_id, last desc`);
+
+  const fileRows = await db
+    .select({ id: files.id, messageId: files.messageId, name: files.name, mimeType: files.mimeType, size: files.size })
+    .from(files)
+    .where(inArray(files.messageId, ids))
+    .orderBy(files.createdAt);
+  const filesBy = new Map<number, FileRef[]>();
+  for (const f of fileRows) {
+    const list = filesBy.get(f.messageId!) ?? [];
+    list.push(fileRef(f));
+    filesBy.set(f.messageId!, list);
+  }
 
   const reactionsBy = new Map<number, Reaction[]>();
   for (const r of reactionRows.rows) {
@@ -144,6 +161,7 @@ export async function loadMessages(db: Db, ids: number[]): Promise<Message[]> {
         mentions: parseMentions(m.text).userIds,
         mentionsChannel: m.mentionsChannel,
         reactions: reactionsBy.get(m.id) ?? [],
+        files: filesBy.get(m.id) ?? [],
         thread:
           m.replyCount > 0 && m.lastReplyAt
             ? { replyCount: m.replyCount, lastReplyAt: m.lastReplyAt.toISOString(), participantIds: participantsBy.get(m.id) ?? [] }

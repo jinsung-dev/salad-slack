@@ -29,6 +29,41 @@
       "when": 1792733636622,
       "tag": "0003_oidc_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792737288382,
+      "tag": "0004_enable_pg_trgm",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792737288877,
+      "tag": "0005_message_search_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792737376465,
+      "tag": "0006_files",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792737586144,
+      "tag": "0007_notifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792738018044,
+      "tag": "0008_saved_messages",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
-import { channelParams, createChannelInput, createDmInput, historyQuery, inviteInput, markReadInput, type MessagePage } from "@chatter/shared";
+import { channelParams, createChannelInput, createDmInput, historyQuery, inviteInput, markReadInput, notifyInput, type MessagePage } from "@chatter/shared";
 import type { AppDeps } from "../app";
 import { channelMembers, channels, messages, users } from "../db/schema";
 import { channelAccess, channelFor, channelSummary, listChannels, loadMessages } from "../queries";
@@ -112,6 +112,18 @@ export async function channelRoutes(app: FastifyInstance, { db, hub }: AppDeps) 
       .limit(limit + 1);
     const ids = rows.slice(0, limit).map((r) => r.id).reverse();
     return { messages: await loadMessages(db, ids), hasMore: rows.length > limit };
+  });
+
+  app.put("/api/channels/:id/notify", async (req, reply) => {
+    const { id } = channelParams.parse(req.params);
+    const { level } = notifyInput.parse(req.body);
+    const updated = await db
+      .update(channelMembers)
+      .set({ notify: level })
+      .where(and(eq(channelMembers.channelId, id), eq(channelMembers.userId, req.user!.id)))
+      .returning({ channelId: channelMembers.channelId });
+    if (updated.length === 0) return reply.code(403).send({ error: "not_a_member" });
+    return reply.code(204).send();
   });
 
   app.post("/api/channels/:id/read", async (req, reply) => {
