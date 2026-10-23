@@ -10,6 +10,7 @@ import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { MessageRow } from "./MessageRow";
 import { PresenceDot, UserPicker } from "./People";
+import { NotifySelect } from "./Settings";
 
 export function ChannelView({ channel, me }: { channel: Channel; me: User }) {
   const qc = useQueryClient();
@@ -73,11 +74,14 @@ export function ChannelView({ channel, me }: { channel: Channel; me: User }) {
               </>
             )}
           </h1>
-          {channel.kind !== "dm" && channel.isMember && (
-            <button className="secondary" onClick={() => setInviting(true)}>
-              사람 추가
-            </button>
-          )}
+          <div className="header-actions">
+            {channel.isMember && <NotifySelect channelId={channel.id} level={channel.notify} />}
+            {channel.kind !== "dm" && channel.isMember && (
+              <button className="secondary" onClick={() => setInviting(true)}>
+                사람 추가
+              </button>
+            )}
+          </div>
         </div>
         {channel.topic && <p className="muted">{channel.topic}</p>}
       </header>

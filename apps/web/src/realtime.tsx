@@ -136,6 +136,7 @@ export function RealtimeProvider({ userId, children }: { userId: string; childre
       socketRef.current = socket;
       socket.onopen = () => {
         if (awayRef.current) socket.send(JSON.stringify({ type: "presence", status: "away" } satisfies ClientEvent));
+        reportFocus();
         // Anything sent while we were disconnected is only in the database.
         if (attempt > 0) {
           for (const key of [keys.channels, keys.users, keys.presence, ["messages"], ["thread"], ["message"]]) {
@@ -172,12 +173,24 @@ export function RealtimeProvider({ userId, children }: { userId: string; childre
     activity.forEach((e) => window.addEventListener(e, onActivity, { passive: true }));
     onActivity();
 
+    // Whether someone is looking at this tab; the server skips push notifications for them.
+    const reportFocus = () => {
+      if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+      const focused = document.visibilityState === "visible" && document.hasFocus();
+      socketRef.current.send(JSON.stringify({ type: "focus", focused } satisfies ClientEvent));
+    };
+    const focusEvents = ["focus", "blur"] as const;
+    focusEvents.forEach((e) => window.addEventListener(e, reportFocus));
+    document.addEventListener("visibilitychange", reportFocus);
+
     connect();
     return () => {
       disposed = true;
       clearTimeout(retry);
       clearTimeout(idleTimer);
       activity.forEach((e) => window.removeEventListener(e, onActivity));
+      focusEvents.forEach((e) => window.removeEventListener(e, reportFocus));
+      document.removeEventListener("visibilitychange", reportFocus);
       socketRef.current?.close();
     };
   }, [qc, userId]);
