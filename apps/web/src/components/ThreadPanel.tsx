@@ -8,6 +8,7 @@ import { channelLabel, useDirectory } from "../directory";
 import { setActiveThread } from "../realtime";
 import { workspacePath } from "../workspace";
 import { Composer } from "./Composer";
+import { EphemeralList } from "./EphemeralList";
 import { MessageList } from "./MessageList";
 import { MessageRow } from "./MessageRow";
 
@@ -78,6 +79,7 @@ export function ThreadPanel({ channel, parentId, me }: { channel: Channel; paren
             {messages.map((m, i) => (
               <MessageRow key={m.id} message={m} previous={messages[i - 1]} me={me.id} canInteract={channel.isMember} />
             ))}
+            <EphemeralList channelId={channel.id} parentId={parentId} me={me.id} />
           </MessageList>
           {channel.isMember && parent.data && !parent.data.deleted && (
             <Composer channelId={channel.id} parentId={parentId} placeholder="답글 보내기" />

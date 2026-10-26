@@ -20,7 +20,7 @@ const REDIS_URL = process.env.TEST_REDIS_URL ?? "redis://localhost:56379";
  */
 export function useCluster(
   nodes = 1,
-  options: Partial<Pick<Parameters<typeof buildApp>[0], "allowedEmailDomains" | "authRateLimit" | "webDist" | "maxFileBytes" | "push">> = {},
+  options: Partial<Pick<Parameters<typeof buildApp>[0], "allowedEmailDomains" | "authRateLimit" | "webDist" | "maxFileBytes" | "push" | "allowPrivateAppUrls">> = {},
 ) {
   const { db, pool } = createDb(DATABASE_URL);
   const apps: Awaited<ReturnType<typeof buildApp>>[] = [];

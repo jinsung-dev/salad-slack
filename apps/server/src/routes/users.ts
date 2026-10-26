@@ -1,26 +1,26 @@
 import type { FastifyInstance } from "fastify";
-import { and, asc, eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { preferencesInput, workspaceParams, type Member, type PresenceMap, type Preferences } from "@chatter/shared";
 import type { AppDeps } from "../app";
 import { users, workspaceMembers } from "../db/schema";
-import { requireRole, workspaceMemberIds } from "../workspaces";
+import { requireRole, toMember, workspaceMemberIds } from "../workspaces";
 
 export async function userRoutes(app: FastifyInstance, { db, hub }: AppDeps) {
   app.addHook("preHandler", async (req, reply) => {
     if (!req.user) return reply.code(401).send({ error: "unauthenticated" });
   });
 
-  // The workspace's people (bots excluded), for mentions, DMs and invites.
+  // The workspace's people and app bots, for mentions, DMs and channel invites.
   app.get("/api/workspaces/:workspaceId/members", async (req, reply): Promise<Member[] | undefined> => {
     const { workspaceId } = workspaceParams.parse(req.params);
     if (!(await requireRole(db, reply, workspaceId, req.user!.id, "guest"))) return;
     const rows = await db
-      .select({ id: users.id, displayName: users.displayName, role: workspaceMembers.role, expiresAt: workspaceMembers.expiresAt })
+      .select({ id: users.id, displayName: users.displayName, kind: users.kind, role: workspaceMembers.role, expiresAt: workspaceMembers.expiresAt })
       .from(workspaceMembers)
       .innerJoin(users, eq(users.id, workspaceMembers.userId))
-      .where(and(eq(workspaceMembers.workspaceId, workspaceId), eq(users.kind, "person")))
+      .where(eq(workspaceMembers.workspaceId, workspaceId))
       .orderBy(asc(users.displayName));
-    return rows.map((r) => ({ ...r, expiresAt: r.expiresAt?.toISOString() ?? null }));
+    return rows.map(toMember);
   });
 
   // Presence of this workspace's people only.

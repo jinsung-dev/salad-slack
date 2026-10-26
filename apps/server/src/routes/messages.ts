@@ -14,7 +14,8 @@ import { files, mentions, messages, reactions } from "../db/schema";
 import { mentionTargets, sendMessage } from "../messageService";
 import { channelAccess, loadMessage, loadMessages, memberIds } from "../queries";
 
-export async function messageRoutes(app: FastifyInstance, { db, hub, fileStore, push }: AppDeps) {
+export async function messageRoutes(app: FastifyInstance, deps: AppDeps) {
+  const { db, hub, fileStore } = deps;
   app.addHook("preHandler", async (req, reply) => {
     if (!req.user) return reply.code(401).send({ error: "unauthenticated" });
   });
@@ -42,7 +43,7 @@ export async function messageRoutes(app: FastifyInstance, { db, hub, fileStore, 
     if (!access) return reply.code(404).send({ error: "channel_not_found" });
     if (!access.isMember) return reply.code(403).send({ error: "not_a_member" });
 
-    const result = await sendMessage({ db, hub, push }, id, req.user!.id, input, req.log);
+    const result = await sendMessage(deps, id, req.user!.id, input, req.log);
     if (result.kind === "rejected") return reply.code(result.error === "client_msg_id_reused" ? 409 : 400).send({ error: result.error });
     return reply.code(result.kind === "created" ? 201 : 200).send(result.message);
   });

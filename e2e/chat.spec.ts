@@ -333,3 +333,79 @@ test("moving between screens keeps one realtime connection", async ({ browser })
   await expect(page.locator(".status-open")).toBeVisible();
   expect(sockets).toBe(0);
 });
+
+test("apps: bot in a channel, slash command with buttons, ephemeral replies", async ({ browser, request }) => {
+  // The app's server, as a team would run it.
+  const { createServer } = await import("node:http");
+  const appServer = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      const body = JSON.parse(raw);
+      const reply =
+        req.url === "/commands"
+          ? {
+              text: `배포 요청: ${body.text}`,
+              responseType: "in_channel",
+              blocks: [
+                { type: "section", text: `*${body.text}* 배포를 승인할까요?`, fields: [`요청자: ${body.user.displayName}`] },
+                { type: "actions", elements: [{ type: "button", text: "승인", actionId: "approve", style: "primary" }] },
+              ],
+            }
+          : { text: `${body.user.displayName} 님이 승인했습니다 ✅`, replaceOriginal: true };
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(reply));
+    });
+  });
+  await new Promise<void>((r) => appServer.listen(0, "127.0.0.1", r));
+  const appUrl = `http://127.0.0.1:${(appServer.address() as { port: number }).port}`;
+
+  const [admin] = await team(browser, `ws8-${run}`, `admin${run}`);
+  await createChannel(admin, `deploys-${run}`);
+
+  await admin.locator(".switcher-button").click();
+  await admin.getByRole("menuitem", { name: "워크스페이스 관리" }).click();
+  await admin.getByLabel("앱 이름").fill("배포봇");
+  await admin.getByRole("button", { name: "앱 만들기" }).click();
+  const token = await admin.getByLabel("봇 토큰").inputValue();
+  expect(token).toMatch(/^xcb-/);
+  await admin.locator(".app-card summary").filter({ hasText: "배포봇" }).click();
+  await admin.getByLabel(/chat:write —/).check();
+  await admin.getByLabel("버튼 클릭 URL").fill(`${appUrl}/actions`);
+  await admin.getByRole("button", { name: "저장", exact: true }).first().click();
+  await expect(admin.getByText("저장했습니다.").first()).toBeVisible();
+  await admin.getByLabel("명령 이름").fill("deploy");
+  await admin.getByLabel("명령 URL").fill(`${appUrl}/commands`);
+  await admin.getByLabel("명령 설명").fill("배포 요청");
+  await admin.getByRole("button", { name: "명령 추가" }).click();
+  await expect(admin.locator(".app-card").getByText("/deploy")).toBeVisible();
+  expect((await request.get("/api/bot/v1/auth.test", { headers: { authorization: `Bearer ${token}` } })).status()).toBe(200);
+
+  // Add the bot to the channel like a person.
+  await admin.getByRole("link", { name: /돌아가기/ }).click();
+  await admin.getByRole("link", { name: `# deploys-${run}` }).click();
+  await admin.getByRole("button", { name: "사람 추가" }).click();
+  await admin.getByPlaceholder("이름으로 찾기").fill("배포봇");
+  await admin.getByLabel("배포봇").check();
+  await admin.getByRole("button", { name: "추가", exact: true }).click();
+
+  // Run the command: the reply arrives with a button; clicking it lets the app replace the message.
+  const box = admin.getByPlaceholder(`#deploys-${run}에 메시지 보내기`);
+  await box.fill("/dep");
+  await expect(admin.locator(".command-hints")).toContainText("/deploy");
+  await box.fill("/deploy prod");
+  await box.press("Enter");
+  const reply = message(admin, "배포를 승인할까요?");
+  await expect(reply.locator(".bot-badge")).toHaveText("앱");
+  await expect(reply.locator(".block-fields")).toContainText(`요청자: admin${run}`);
+  await reply.getByRole("button", { name: "승인" }).click();
+  await expect(message(admin, `admin${run} 님이 승인했습니다`)).toBeVisible();
+  await expect(message(admin, "배포를 승인할까요?")).toHaveCount(0);
+
+  await box.fill("/nope");
+  await box.press("Enter");
+  await expect(admin.locator(".message.ephemeral")).toContainText("등록된 명령이 아닙니다");
+  await expect(admin.locator(".message.ephemeral")).toContainText("나에게만 보임");
+  await admin.screenshot({ path: "e2e/artifacts/apps.png" });
+  await new Promise<void>((r) => appServer.close(() => r()));
+});

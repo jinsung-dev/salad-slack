@@ -14,7 +14,8 @@ export function useDirectory() {
   const list = users.data ?? [];
   const names: Names = new Map(list.map((u) => [u.id, u.displayName]));
   const guests: ReadonlySet<string> = new Set(list.filter((u) => u.role === "guest").map((u) => u.id));
-  return { users: list, names, guests };
+  const bots: ReadonlySet<string> = new Set(list.filter((u) => u.isBot).map((u) => u.id));
+  return { users: list, names, guests, bots };
 }
 
 export const nameOf = (names: Names, id: string) => names.get(id) ?? "알 수 없는 사용자";

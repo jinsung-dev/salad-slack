@@ -18,7 +18,7 @@ const home = useWorkspace(base);
 const msg = (over: Partial<Message> = {}): Message => ({
   id: 1, channelId: "c", parentId: null, author: { id: "author", displayName: "Kim" }, text: "hi", clientMsgId: "k",
   createdAt: "", editedAt: null, deleted: false, alsoSentToChannel: false, mentions: [], mentionsChannel: false,
-  reactions: [], files: [], thread: null, ...over,
+  reactions: [], files: [], blocks: null, thread: null, ...over,
 });
 
 describe("notification rules", () => {

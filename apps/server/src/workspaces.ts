@@ -1,6 +1,6 @@
 import type { FastifyReply } from "fastify";
 import { and, eq, inArray, isNotNull, lte, ne, sql } from "drizzle-orm";
-import type { GrantableRole, WorkspaceRole } from "@chatter/shared";
+import type { GrantableRole, Member, WorkspaceRole } from "@chatter/shared";
 import type { Db } from "./db/client";
 import type { RealtimeHub } from "./realtime";
 import { channelMembers, channels, users, workspaceMembers } from "./db/schema";
@@ -56,11 +56,16 @@ export async function coMemberIds(db: Db, userId: string): Promise<string[]> {
 
 export async function memberView(db: Db, workspaceId: string, userId: string) {
   const [row] = await db
-    .select({ id: users.id, displayName: users.displayName, role: workspaceMembers.role, expiresAt: workspaceMembers.expiresAt })
+    .select({ id: users.id, displayName: users.displayName, kind: users.kind, role: workspaceMembers.role, expiresAt: workspaceMembers.expiresAt })
     .from(workspaceMembers)
     .innerJoin(users, eq(users.id, workspaceMembers.userId))
     .where(and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, userId)));
-  return row ? { ...row, expiresAt: row.expiresAt?.toISOString() ?? null } : null;
+  return row ? toMember(row) : null;
+}
+
+/** The Member view of a workspace membership row joined with its user. */
+export function toMember(row: { id: string; displayName: string; kind: "person" | "bot"; role: WorkspaceRole; expiresAt: Date | null }): Member {
+  return { id: row.id, displayName: row.displayName, role: row.role, isBot: row.kind === "bot", expiresAt: row.expiresAt?.toISOString() ?? null };
 }
 
 /** Adds someone to a workspace and tells its members; false when they already belonged. */

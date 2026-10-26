@@ -38,6 +38,7 @@ const app = await buildApp({
   webDist: env.webDist,
   fileStorageDir: env.fileStorageDir,
   maxFileBytes: env.maxFileBytes,
+  allowPrivateAppUrls: env.allowPrivateAppUrls,
   push: env.vapid ? { publicKey: env.vapid.publicKey, send: webPushSender(env.vapid) } : null,
   trustProxy: env.trustProxy,
 });

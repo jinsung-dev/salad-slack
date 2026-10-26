@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, type DragEvent } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MAX_FILES_PER_MESSAGE, type FileRef } from "@chatter/shared";
 import { ApiError, api } from "../api";
 import { appendMessage } from "../cache";
 import { nameOf, toTokens, useDirectory, type MentionMap } from "../directory";
+import { addEphemeral } from "../ephemeral";
 import { useSendEvent, useTyping } from "../realtime";
+import { useCurrentWorkspace } from "../workspace";
 import { MentionTextarea } from "./MentionTextarea";
 import { formatBytes } from "./Files";
 
@@ -78,7 +80,41 @@ export function Composer({
   const uploading = attachments.some((a) => a.state === "uploading");
   const ready = attachments.filter((a) => a.state === "done").map((a) => a.ref!);
 
+  const workspace = useCurrentWorkspace();
+  const slash = /^\/([a-z0-9_-]*)(?:\s+([\s\S]*))?$/i.exec(text);
+  // Fetched when someone starts a command, so newly added ones show up.
+  const commands = useQuery({ queryKey: ["commands", workspace.id], queryFn: () => api.commands(workspace.id), enabled: slash !== null, staleTime: 10_000 });
+  const commandHints = slash && slash[2] === undefined ? (commands.data ?? []).filter((c) => c.command.startsWith(slash[1]!.toLowerCase())) : [];
+
+  /** `/name text` goes to the app that owns the command instead of the conversation. */
+  const runCommand = async (name: string, args: string) => {
+    const known = (commands.data ?? []).some((c) => c.command === name);
+    if (!known) {
+      addEphemeral({
+        id: crypto.randomUUID(),
+        channelId,
+        parentId,
+        author: { id: "chatter", displayName: "Chatter" },
+        text: `\`/${name}\`은(는) 등록된 명령이 아닙니다.`,
+        blocks: null,
+        createdAt: new Date().toISOString(),
+      });
+      return;
+    }
+    setSending(true);
+    try {
+      await api.runCommand(channelId, name, toTokens(args, picked.current), parentId);
+      setText("");
+      picked.current.clear();
+    } catch {
+      setFailed(true);
+    } finally {
+      setSending(false);
+    }
+  };
+
   const submit = async () => {
+    if (slash && slash[1] && attachments.length === 0) return runCommand(slash[1].toLowerCase(), slash[2]?.trim() ?? "");
     const body = toTokens(text.trim(), picked.current);
     if ((!body && ready.length === 0) || sending || uploading) return;
     pendingId.current ??= crypto.randomUUID();
@@ -138,6 +174,18 @@ export function Composer({
       }}
     >
       <div className={dragging ? "composer dragging" : "composer"}>
+        {commandHints.length > 0 && (
+          <ul className="command-hints" aria-label="명령">
+            {commandHints.map((c) => (
+              <li key={c.command}>
+                <button className="link" onClick={() => setText(`/${c.command} `)}>
+                  <strong>/{c.command}</strong> {c.usageHint && <span className="muted">{c.usageHint}</span>}
+                  <span className="muted"> — {c.description || c.appName}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         {attachments.length > 0 && (
           <ul className="attachments" aria-label="첨부 파일">
             {attachments.map((a) => (

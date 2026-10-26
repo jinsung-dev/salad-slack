@@ -7,6 +7,7 @@ import { flattenPages, keys, updateChannel } from "../cache";
 import { channelLabel, useDirectory } from "../directory";
 import { setActiveChannel } from "../realtime";
 import { Composer } from "./Composer";
+import { EphemeralList } from "./EphemeralList";
 import { MessageList } from "./MessageList";
 import { MessageRow } from "./MessageRow";
 import { PresenceDot, UserPicker } from "./People";
@@ -115,6 +116,7 @@ export function ChannelView({ channel, me }: { channel: Channel; me: User }) {
         {messages.map((m, i) => (
           <MessageRow key={m.id} message={m} previous={messages[i - 1]} me={me.id} canInteract={channel.isMember} onOpenThread={openThread} />
         ))}
+        <EphemeralList channelId={channel.id} parentId={null} me={me.id} />
       </MessageList>
 
       {channel.isMember ? (

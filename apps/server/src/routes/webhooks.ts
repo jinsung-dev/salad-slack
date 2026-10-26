@@ -72,12 +72,12 @@ export async function webhookRoutes(app: FastifyInstance, deps: AppDeps) {
       const { token } = tokenParams.parse(req.params);
       const [hook] = await db.select().from(webhooks).where(eq(webhooks.tokenHash, hashToken(token)));
       if (!hook) return reply.code(404).send({ error: "webhook_not_found" });
-      const { text } = webhookMessageInput.parse(req.body);
+      const { text, blocks } = webhookMessageInput.parse(req.body);
       const result = await sendMessage(
         deps,
         hook.channelId,
         hook.botUserId,
-        { text, clientMsgId: randomUUID(), alsoSendToChannel: false, fileIds: [] },
+        { text, blocks, clientMsgId: randomUUID(), alsoSendToChannel: false, fileIds: [] },
         req.log,
       );
       if (result.kind === "rejected") return reply.code(400).send({ error: result.error });

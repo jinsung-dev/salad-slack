@@ -6,6 +6,7 @@ import { keys, replaceMessage, updateMessage } from "../cache";
 import { nameOf, toDisplay, toTokens, useDirectory, type MentionMap } from "../directory";
 import { Markdown } from "../markdown";
 import { MentionTextarea } from "./MentionTextarea";
+import { Blocks } from "./Blocks";
 import { MessageFiles } from "./Files";
 import { Avatar } from "./People";
 import { useCurrentWorkspace } from "../workspace";
@@ -31,7 +32,7 @@ export function MessageRow({
   onOpenThread?: (id: number) => void;
 }) {
   const qc = useQueryClient();
-  const { names, guests } = useDirectory();
+  const { names, guests, bots } = useDirectory();
   const [editing, setEditing] = useState(false);
   const [picking, setPicking] = useState(false);
   const workspace = useCurrentWorkspace();
@@ -82,6 +83,7 @@ export function MessageRow({
             <header>
               <strong>{message.author.displayName}</strong>
               {guests.has(message.author.id) && <span className="guest-badge">게스트</span>}
+              {bots.has(message.author.id) && <span className="bot-badge">앱</span>}
               <time dateTime={message.createdAt}>{timeFormat.format(at)}</time>
             </header>
           )}
@@ -96,11 +98,16 @@ export function MessageRow({
             <EditBox message={message} onDone={() => setEditing(false)} />
           ) : (
             <>
-              {message.text && (
-                <div className="text">
-                  <Markdown text={message.text} names={names} me={me} />
-                  {message.editedAt && <span className="edited muted"> (수정됨)</span>}
-                </div>
+              {message.blocks ? (
+                // Blocks replace the text, which stays as the fallback for search and notifications.
+                <Blocks blocks={message.blocks} messageId={message.id} me={me} interactive={canInteract} />
+              ) : (
+                message.text && (
+                  <div className="text">
+                    <Markdown text={message.text} names={names} me={me} />
+                    {message.editedAt && <span className="edited muted"> (수정됨)</span>}
+                  </div>
+                )
               )}
               <MessageFiles files={message.files} />
             </>

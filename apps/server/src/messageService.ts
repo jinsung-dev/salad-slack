@@ -1,9 +1,10 @@
 import type { FastifyBaseLogger } from "fastify";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { parseMentions, type Message, type postMessageInput } from "@chatter/shared";
+import { parseMentions, type Block, type Message, type postMessageInput } from "@chatter/shared";
 import type { z } from "zod";
 import type { AppDeps } from "./app";
 import { channelMembers, files, mentions, messages } from "./db/schema";
+import { dispatchMessageEvents } from "./events";
 import { notifyNewMessage } from "./notify";
 import { loadMessage, memberIds } from "./queries";
 
@@ -11,7 +12,8 @@ import { loadMessage, memberIds } from "./queries";
 // mentions, attachments, thread bookkeeping, realtime delivery and push.
 // Callers check that the author may post in the channel first.
 
-export type SendInput = z.output<typeof postMessageInput>;
+/** People send text and files; apps may add blocks. */
+export type SendInput = z.output<typeof postMessageInput> & { blocks?: Block[] };
 
 export type SendResult =
   | { kind: "created"; message: Message }
@@ -34,7 +36,7 @@ class InvalidFiles extends Error {}
 type MessageRow = typeof messages.$inferSelect;
 
 export async function sendMessage(
-  { db, hub, push }: Pick<AppDeps, "db" | "hub" | "push">,
+  { db, hub, push, outbound }: Pick<AppDeps, "db" | "hub" | "push" | "outbound">,
   channelId: string,
   authorId: string,
   input: SendInput,
@@ -62,6 +64,7 @@ export async function sendMessage(
           text: input.text,
           clientMsgId: input.clientMsgId,
           mentionsChannel: mention.channel,
+          blocks: input.blocks ?? null,
         })
         .onConflictDoNothing({ target: [messages.userId, messages.clientMsgId] })
         .returning({ id: messages.id });
@@ -116,5 +119,6 @@ export async function sendMessage(
   }
   // Off the response path: a slow push service never delays the sender.
   if (push) void notifyNewMessage(db, hub, push.send, message).catch((err) => log.error({ err }, "push notification failed"));
+  void dispatchMessageEvents(db, outbound, message, log).catch((err) => log.error({ err }, "app events failed"));
   return { kind: "created", message };
 }

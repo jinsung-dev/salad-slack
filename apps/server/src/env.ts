@@ -39,6 +39,8 @@ export const env = {
           privateKey: process.env.VAPID_PRIVATE_KEY,
         }
       : null,
+  // Development only: let apps use http:// and private addresses (never on a shared server).
+  allowPrivateAppUrls: process.env.ALLOW_PRIVATE_APP_URLS === "true",
   // The built web app, served from the same origin when present.
   webDist: process.env.WEB_DIST ?? fileURLToPath(new URL("../../web/dist", import.meta.url)),
 };

@@ -92,6 +92,13 @@
       "when": 1792744189598,
       "tag": "0012_channel_invites",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1792982752497,
+      "tag": "0013_apps_commands_blocks",
+      "breakpoints": true
     }
   ]
 }

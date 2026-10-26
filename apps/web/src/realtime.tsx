@@ -15,6 +15,7 @@ import {
   upsertChannel,
   upsertMember,
 } from "./cache";
+import { addEphemeral } from "./ephemeral";
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
 
@@ -141,6 +142,8 @@ export function RealtimeProvider({ userId, children }: { userId: string; childre
           return setPresence(qc, event.userId, event.status);
         case "typing":
           return noteTyping(event.channelId, event.parentId, event.userId);
+        case "ephemeral":
+          return addEphemeral(event.message);
       }
     };
 
