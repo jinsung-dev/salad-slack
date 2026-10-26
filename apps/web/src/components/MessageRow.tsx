@@ -8,6 +8,7 @@ import { Markdown } from "../markdown";
 import { MentionTextarea } from "./MentionTextarea";
 import { MessageFiles } from "./Files";
 import { Avatar } from "./People";
+import { useCurrentWorkspace } from "../workspace";
 
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
 export const QUICK_REACTIONS = ["👍", "❤️", "😂", "🎉", "👀", "🙏", "✅", "🔥"];
@@ -30,10 +31,12 @@ export function MessageRow({
   onOpenThread?: (id: number) => void;
 }) {
   const qc = useQueryClient();
-  const { names } = useDirectory();
+  const { names, guests } = useDirectory();
   const [editing, setEditing] = useState(false);
   const [picking, setPicking] = useState(false);
-  const saved = useQuery({ queryKey: keys.saved, queryFn: api.saved }).data?.messages.some((m) => m.id === message.id) ?? false;
+  const workspace = useCurrentWorkspace();
+  const saved =
+    useQuery({ queryKey: keys.saved(workspace.id), queryFn: () => api.saved(workspace.id) }).data?.messages.some((m) => m.id === message.id) ?? false;
 
   const at = new Date(message.createdAt);
   const prevAt = previous ? new Date(previous.createdAt) : undefined;
@@ -55,7 +58,7 @@ export function MessageRow({
 
   const toggleSaved = async () => {
     await api.setSaved(message.id, !saved);
-    void qc.invalidateQueries({ queryKey: keys.saved });
+    void qc.invalidateQueries({ queryKey: keys.saved(workspace.id) });
   };
 
   const remove = async () => {
@@ -78,6 +81,7 @@ export function MessageRow({
           {!grouped && (
             <header>
               <strong>{message.author.displayName}</strong>
+              {guests.has(message.author.id) && <span className="guest-badge">게스트</span>}
               <time dateTime={message.createdAt}>{timeFormat.format(at)}</time>
             </header>
           )}

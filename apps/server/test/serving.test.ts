@@ -26,7 +26,7 @@ describe("serving the app for others to use", () => {
   });
 
   it("answers malformed JSON with 400, not a server error", async () => {
-    const res = await fetch(`${base()}/api/channels`, { method: "POST", headers: { "content-type": "application/json" }, body: "{" });
+    const res = await fetch(`${base()}/api/workspaces`, { method: "POST", headers: { "content-type": "application/json" }, body: "{" });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "bad_request" });
   });

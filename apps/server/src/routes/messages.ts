@@ -1,38 +1,23 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { and, desc, eq, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, notInArray, sql } from "drizzle-orm";
 import {
   channelParams,
   editMessageInput,
   historyQuery,
   messageParams,
-  parseMentions,
   postMessageInput,
   reactionParams,
   type MessagePage,
 } from "@chatter/shared";
 import type { AppDeps } from "../app";
-import { channelMembers, files, mentions, messages, reactions } from "../db/schema";
-import { notifyNewMessage } from "../notify";
+import { files, mentions, messages, reactions } from "../db/schema";
+import { mentionTargets, sendMessage } from "../messageService";
 import { channelAccess, loadMessage, loadMessages, memberIds } from "../queries";
-
-type MessageRow = typeof messages.$inferSelect;
-
-/** Thrown inside a send transaction to roll it back when an attachment is not the sender's to attach. */
-class InvalidFiles extends Error {}
 
 export async function messageRoutes(app: FastifyInstance, { db, hub, fileStore, push }: AppDeps) {
   app.addHook("preHandler", async (req, reply) => {
     if (!req.user) return reply.code(401).send({ error: "unauthenticated" });
   });
-
-  /** Who a text notifies: explicit mentions of members, or every member for `<!channel>`; never the author. */
-  const mentionTargets = (text: string, members: string[], author: string) => {
-    const parsed = parseMentions(text);
-    const memberSet = new Set(members);
-    const targets = new Set(parsed.channel ? members : parsed.userIds.filter((u) => memberSet.has(u)));
-    targets.delete(author);
-    return { targets: [...targets], channel: parsed.channel };
-  };
 
   /** The message and its channel when visible to `userId`, else a 404 is sent. */
   const visibleMessage = async (id: number, userId: string, reply: FastifyReply) => {
@@ -53,87 +38,13 @@ export async function messageRoutes(app: FastifyInstance, { db, hub, fileStore, 
   app.post("/api/channels/:id/messages", async (req, reply) => {
     const { id } = channelParams.parse(req.params);
     const input = postMessageInput.parse(req.body);
-    const me = req.user!.id;
-    const access = await channelAccess(db, id, me);
+    const access = await channelAccess(db, id, req.user!.id);
     if (!access) return reply.code(404).send({ error: "channel_not_found" });
     if (!access.isMember) return reply.code(403).send({ error: "not_a_member" });
-    if (input.alsoSendToChannel && input.parentId === undefined) return reply.code(400).send({ error: "invalid_input" });
 
-    const members = await memberIds(db, id);
-    const mention = mentionTargets(input.text, members, me);
-
-    const send = db.transaction(async (tx) => {
-      let parent: MessageRow | undefined;
-      if (input.parentId !== undefined) {
-        [parent] = await tx.select().from(messages).where(eq(messages.id, input.parentId)).for("update");
-        if (!parent || parent.channelId !== id || parent.parentId !== null || parent.deletedAt) return "invalid_parent" as const;
-      }
-      const [inserted] = await tx
-        .insert(messages)
-        .values({
-          channelId: id,
-          userId: me,
-          parentId: parent?.id ?? null,
-          alsoSentToChannel: input.alsoSendToChannel,
-          text: input.text,
-          clientMsgId: input.clientMsgId,
-          mentionsChannel: mention.channel,
-        })
-        .onConflictDoNothing({ target: [messages.userId, messages.clientMsgId] })
-        .returning({ id: messages.id });
-      if (!inserted) return "duplicate" as const;
-
-      if (mention.targets.length > 0) {
-        await tx.insert(mentions).values(mention.targets.map((userId) => ({ messageId: inserted.id, userId, channelId: id })));
-      }
-      if (input.fileIds.length > 0) {
-        // Only the sender's own unattached uploads to this conversation.
-        const attached = await tx
-          .update(files)
-          .set({ messageId: inserted.id })
-          .where(and(inArray(files.id, input.fileIds), eq(files.uploaderId, me), eq(files.channelId, id), isNull(files.messageId)))
-          .returning({ id: files.id });
-        if (attached.length !== new Set(input.fileIds).size) throw new InvalidFiles();
-      }
-      if (parent) {
-        await tx
-          .update(messages)
-          .set({ replyCount: sql`${messages.replyCount} + 1`, lastReplyAt: sql`now()` })
-          .where(eq(messages.id, parent.id));
-      }
-      if (!parent || input.alsoSendToChannel) {
-        await tx
-          .update(channelMembers)
-          .set({ lastReadMessageId: sql`greatest(${channelMembers.lastReadMessageId}, ${inserted.id})` })
-          .where(and(eq(channelMembers.channelId, id), eq(channelMembers.userId, me)));
-      }
-      return inserted.id;
-    });
-
-    let result: Awaited<typeof send>;
-    try {
-      result = await send;
-    } catch (err) {
-      if (err instanceof InvalidFiles) return reply.code(400).send({ error: "invalid_files" });
-      throw err;
-    }
-    if (result === "invalid_parent") return reply.code(400).send({ error: "invalid_parent" });
-    if (result === "duplicate") {
-      // Retry of an already-accepted send: return the original, do not re-broadcast.
-      const [existing] = await db
-        .select({ id: messages.id, channelId: messages.channelId })
-        .from(messages)
-        .where(and(eq(messages.userId, me), eq(messages.clientMsgId, input.clientMsgId)));
-      if (!existing || existing.channelId !== id) return reply.code(409).send({ error: "client_msg_id_reused" });
-      return loadMessage(db, existing.id);
-    }
-
-    const message = (await loadMessage(db, result))!;
-    hub.publish({ users: members }, { type: "message.created", message });
-    if (message.parentId !== null) await publishUpdated(message.parentId, members);
-    // Off the response path: a slow push service never delays the sender.
-    if (push) void notifyNewMessage(db, hub, push.send, message).catch((err) => req.log.error({ err }, "push notification failed"));
-    return reply.code(201).send(message);
+    const result = await sendMessage({ db, hub, push }, id, req.user!.id, input, req.log);
+    if (result.kind === "rejected") return reply.code(result.error === "client_msg_id_reused" ? 409 : 400).send({ error: result.error });
+    return reply.code(result.kind === "created" ? 201 : 200).send(result.message);
   });
 
   app.get("/api/messages/:id", async (req, reply) => {

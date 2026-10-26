@@ -2,6 +2,10 @@ import type {
   Channel,
   CreateChannelInput,
   FileRef,
+  GrantableRole,
+  Invite,
+  InvitePreview,
+  JoinableWorkspace,
   Member,
   Message,
   MessagePage,
@@ -12,6 +16,8 @@ import type {
   Reaction,
   SearchQuery,
   User,
+  Webhook,
+  Workspace,
 } from "@chatter/shared";
 
 export class ApiError extends Error {
@@ -49,17 +55,38 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 const page = (before?: number) => (before ? `?before=${before}` : "");
+const ws = (workspaceId: string, rest = "") => `/api/workspaces/${workspaceId}${rest}`;
 
 export const api = {
   me: () => request<User>("GET", "/api/auth/me"),
   logout: () => request<void>("POST", "/api/auth/logout"),
 
-  users: () => request<Member[]>("GET", "/api/users"),
-  presence: () => request<PresenceMap>("GET", "/api/presence"),
+  workspaces: () => request<Workspace[]>("GET", "/api/workspaces"),
+  createWorkspace: (name: string, joinDomain: string | null) => request<Workspace>("POST", "/api/workspaces", { name, joinDomain }),
+  updateWorkspace: (wid: string, name: string, joinDomain: string | null) => request<void>("PUT", ws(wid), { name, joinDomain }),
+  joinableWorkspaces: () => request<JoinableWorkspace[]>("GET", "/api/workspaces/joinable"),
+  joinWorkspace: (wid: string) => request<void>("POST", ws(wid, "/join")),
+  setRole: (wid: string, userId: string, role: GrantableRole) => request<void>("PUT", ws(wid, `/members/${userId}/role`), { role }),
+  removeMember: (wid: string, userId: string) => request<void>("DELETE", ws(wid, `/members/${userId}`)),
 
-  channels: () => request<Channel[]>("GET", "/api/channels"),
-  createChannel: (input: CreateChannelInput) => request<Channel>("POST", "/api/channels", input),
-  createDm: (userIds: string[]) => request<Channel>("POST", "/api/dms", { userIds }),
+  invites: (wid: string) => request<Invite[]>("GET", ws(wid, "/invites")),
+  createInvite: (wid: string, invite: { role: GrantableRole; email?: string | null; channelId?: string | null; guestDays?: number | null }) =>
+    request<Invite>("POST", ws(wid, "/invites"), invite),
+  revokeInvite: (wid: string, id: string) => request<void>("DELETE", ws(wid, `/invites/${id}`)),
+  previewInvite: (token: string) => request<InvitePreview>("GET", `/api/invites/${token}`),
+  acceptInvite: (token: string) => request<{ workspaceId: string; channelId: string | null }>("POST", `/api/invites/${token}/accept`),
+
+  webhooks: (wid: string) => request<Webhook[]>("GET", ws(wid, "/webhooks")),
+  createWebhook: (wid: string, channelId: string, name: string) => request<Webhook>("POST", ws(wid, "/webhooks"), { channelId, name }),
+  revokeWebhook: (wid: string, id: string) => request<void>("DELETE", ws(wid, `/webhooks/${id}`)),
+
+  members: (wid: string) => request<Member[]>("GET", ws(wid, "/members")),
+  presence: (wid: string) => request<PresenceMap>("GET", ws(wid, "/presence")),
+
+  channels: (wid: string) => request<Channel[]>("GET", ws(wid, "/channels")),
+  channel: (id: string) => request<Channel>("GET", `/api/channels/${id}`),
+  createChannel: (wid: string, input: CreateChannelInput) => request<Channel>("POST", ws(wid, "/channels"), input),
+  createDm: (wid: string, userIds: string[]) => request<Channel>("POST", ws(wid, "/dms"), { userIds }),
   joinChannel: (id: string) => request<void>("POST", `/api/channels/${id}/join`),
   invite: (id: string, userIds: string[]) => request<void>("POST", `/api/channels/${id}/members`, { userIds }),
   markRead: (id: string, messageId: number) => request<void>("POST", `/api/channels/${id}/read`, { messageId }),
@@ -88,7 +115,7 @@ export const api = {
   pushKey: () => request<{ publicKey: string }>("GET", "/api/push/key"),
   subscribePush: (sub: PushSubscriptionJSON) => request<void>("POST", "/api/push/subscriptions", sub),
   unsubscribePush: (endpoint: string) => request<void>("DELETE", "/api/push/subscriptions", { endpoint }),
-  saved: () => request<MessagePage>("GET", "/api/saved"),
+  saved: (wid: string) => request<MessagePage>("GET", ws(wid, "/saved")),
   setSaved: (id: number, saved: boolean) => request<void>(saved ? "PUT" : "DELETE", `/api/messages/${id}/save`),
   react: (id: number, emoji: string, add: boolean) =>
     request<Reaction[]>(add ? "PUT" : "DELETE", `/api/messages/${id}/reactions/${encodeURIComponent(emoji)}`),

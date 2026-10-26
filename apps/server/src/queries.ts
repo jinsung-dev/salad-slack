@@ -1,7 +1,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { parseMentions, type Channel, type ChannelSummary, type FileRef, type Message, type NotifyLevel, type Reaction } from "@chatter/shared";
 import type { Db } from "./db/client";
-import { channelMembers, channels, files, messages, users } from "./db/schema";
+import { channelMembers, channels, files, messages, users, workspaceMembers } from "./db/schema";
 import { fileRef } from "./files";
 import { effectiveLevel } from "./notify";
 
@@ -14,20 +14,34 @@ const PARTICIPANT_PREVIEW = 3;
 export type ChannelRow = typeof channels.$inferSelect;
 
 /**
- * The channel when `userId` may see it: public channels for everyone,
- * private channels and DMs only for members. Invisible and missing look the same.
+ * The channel when `userId` may see it: conversations they belong to, plus
+ * public channels of workspaces where they are more than a guest. Invisible
+ * and missing look the same. `role` is their role in the channel's workspace.
  */
 export async function channelAccess(db: Db, channelId: string, userId: string) {
   const [row] = await db
-    .select({ channel: channels, memberId: channelMembers.userId })
+    .select({ channel: channels, memberId: channelMembers.userId, role: workspaceMembers.role })
     .from(channels)
     .leftJoin(channelMembers, and(eq(channelMembers.channelId, channels.id), eq(channelMembers.userId, userId)))
+    .leftJoin(workspaceMembers, and(eq(workspaceMembers.workspaceId, channels.workspaceId), eq(workspaceMembers.userId, userId)))
     .where(eq(channels.id, channelId))
     .limit(1);
-  if (!row) return null;
+  if (!row || !row.role) return null;
   const isMember = row.memberId !== null;
-  if (!isMember && row.channel.kind !== "public") return null;
-  return { channel: row.channel, isMember };
+  if (!isMember && !(row.channel.kind === "public" && row.role !== "guest")) return null;
+  return { channel: row.channel, isMember, role: row.role };
+}
+
+/** Adds workspace members to a channel, existing history marked read; returns who was newly added. */
+export async function addChannelMembers(db: Db, channelId: string, workspaceId: string, userIds: string[]): Promise<string[]> {
+  if (userIds.length === 0) return [];
+  const { rows } = await db.execute<{ user_id: string }>(sql`
+    insert into channel_members (channel_id, user_id, last_read_message_id)
+    select ${channelId}, wm.user_id, (select coalesce(max(id), 0) from messages where channel_id = ${channelId})
+    from workspace_members wm where wm.workspace_id = ${workspaceId} and wm.user_id in ${userIds}
+    on conflict do nothing
+    returning user_id`);
+  return rows.map((r) => r.user_id);
 }
 
 export async function memberIds(db: Db, channelId: string): Promise<string[]> {
@@ -41,6 +55,7 @@ export async function memberIds(db: Db, channelId: string): Promise<string[]> {
 export async function channelSummary(db: Db, channel: ChannelRow): Promise<ChannelSummary> {
   return {
     id: channel.id,
+    workspaceId: channel.workspaceId,
     kind: channel.kind,
     name: channel.name,
     topic: channel.topic,
@@ -48,10 +63,11 @@ export async function channelSummary(db: Db, channel: ChannelRow): Promise<Chann
   };
 }
 
-/** Every conversation visible to `me` (or just `onlyId`), with their unread state. */
-export async function listChannels(db: Db, me: string, onlyId?: string): Promise<Channel[]> {
+/** Every conversation of a workspace visible to `me` (or just `onlyId`), with their unread state. */
+export async function listChannels(db: Db, me: string, workspaceId: string, onlyId?: string): Promise<Channel[]> {
   const { rows } = await db.execute<{
     id: string;
+    workspace_id: string;
     kind: Channel["kind"];
     name: string | null;
     topic: string;
@@ -61,7 +77,7 @@ export async function listChannels(db: Db, me: string, onlyId?: string): Promise
     unread_count: number;
     mention_count: number;
   }>(sql`
-    select c.id, c.kind, c.name, c.topic,
+    select c.id, c.workspace_id, c.kind, c.name, c.topic,
            (cm.user_id is not null) as is_member,
            cm.notify,
            case when c.kind = 'dm' then (
@@ -77,12 +93,15 @@ export async function listChannels(db: Db, me: string, onlyId?: string): Promise
              where mn.channel_id = c.id and mn.user_id = ${me} and mn.read_at is null
            ) end as mention_count
     from channels c
+    join workspace_members wm on wm.workspace_id = c.workspace_id and wm.user_id = ${me}
     left join channel_members cm on cm.channel_id = c.id and cm.user_id = ${me}
-    where (c.kind = 'public' or cm.user_id is not null)
+    where c.workspace_id = ${workspaceId}
+      and ((c.kind = 'public' and wm.role <> 'guest') or cm.user_id is not null)
       ${onlyId ? sql`and c.id = ${onlyId}` : sql``}
     order by c.kind = 'dm', c.name, c.created_at`);
   return rows.map((r) => ({
     id: r.id,
+    workspaceId: r.workspace_id,
     kind: r.kind,
     name: r.name,
     topic: r.topic,
@@ -95,7 +114,8 @@ export async function listChannels(db: Db, me: string, onlyId?: string): Promise
 }
 
 export async function channelFor(db: Db, me: string, channelId: string): Promise<Channel> {
-  const [channel] = await listChannels(db, me, channelId);
+  const [row] = await db.select({ workspaceId: channels.workspaceId }).from(channels).where(eq(channels.id, channelId));
+  const [channel] = row ? await listChannels(db, me, row.workspaceId, channelId) : [];
   if (!channel) throw new Error(`channel ${channelId} is not visible to ${me}`);
   return channel;
 }

@@ -1,21 +1,22 @@
 import { describe, expect, it } from "vitest";
 import type { Channel, Message, MessagePage } from "@chatter/shared";
-import { signIn, uniqueName, useCluster, type Client } from "./helpers";
+import { signIn, uniqueName, useCluster, type Client, useWorkspace } from "./helpers";
 
 const { urls } = useCluster();
 const base = () => urls[0]!;
+const home = useWorkspace(base);
 
 const post = async (who: Client, channelId: string, text: string, extra: Record<string, unknown> = {}) =>
   (await who.call<Message>("POST", `/api/channels/${channelId}/messages`, { text, clientMsgId: crypto.randomUUID(), ...extra })).body;
 const search = async (who: Client, params: Record<string, string>) =>
-  (await who.call<MessagePage>("GET", `/api/search?${new URLSearchParams(params)}`)).body;
+  (await who.call<MessagePage>("GET", `/api/search?${new URLSearchParams({ workspaceId: home.id, ...params })}`)).body;
 const texts = (page: MessagePage) => page.messages.map((m) => m.text);
 
 describe("message search", () => {
   it("finds partial Korean words, newest first, in every conversation the viewer can read", async () => {
-    const [alice, bob] = [await signIn(base(), "alice"), await signIn(base(), "bob")];
-    const open = (await alice.call<Channel>("POST", "/api/channels", { name: uniqueName() })).body;
-    const secret = (await alice.call<Channel>("POST", "/api/channels", { name: uniqueName(), isPrivate: true })).body;
+    const [alice, bob] = [await home.member("alice"), await home.member("bob")];
+    const open = (await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName() })).body;
+    const secret = (await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName(), isPrivate: true })).body;
     const tag = crypto.randomUUID().slice(0, 6);
 
     const first = await post(alice, open.id, `${tag} 배포 일정 공유합니다`);
@@ -35,9 +36,9 @@ describe("message search", () => {
   });
 
   it("filters by channel, author and time, pages with a cursor, and treats wildcards literally", async () => {
-    const [alice, bob] = [await signIn(base(), "alice"), await signIn(base(), "bob")];
-    const a = (await alice.call<Channel>("POST", "/api/channels", { name: uniqueName() })).body;
-    const b = (await alice.call<Channel>("POST", "/api/channels", { name: uniqueName() })).body;
+    const [alice, bob] = [await home.member("alice"), await home.member("bob")];
+    const a = (await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName() })).body;
+    const b = (await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName() })).body;
     await bob.call("POST", `/api/channels/${a.id}/join`);
     const tag = crypto.randomUUID().slice(0, 6);
     await post(alice, a.id, `${tag} one`);
@@ -58,26 +59,26 @@ describe("message search", () => {
   });
 
   it("skips deleted messages and rejects empty queries", async () => {
-    const alice = await signIn(base(), "alice");
-    const c = (await alice.call<Channel>("POST", "/api/channels", { name: uniqueName() })).body;
+    const alice = await home.member("alice");
+    const c = (await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName() })).body;
     const tag = crypto.randomUUID().slice(0, 6);
     const gone = await post(alice, c.id, `${tag} oops`);
     await alice.call("DELETE", `/api/messages/${gone.id}`);
     expect(texts(await search(alice, { q: tag }))).toEqual([]);
-    expect((await alice.call("GET", "/api/search?q=%20")).status).toBe(400);
+    expect((await alice.call("GET", `/api/search?workspaceId=${home.id}&q=%20`)).status).toBe(400);
   });
 });
 
 describe("saved messages", () => {
   it("keeps a personal list, newest save first, without deleted messages, for readers only", async () => {
-    const [alice, bob] = [await signIn(base(), "alice"), await signIn(base(), "bob")];
-    const room = (await alice.call<Channel>("POST", "/api/channels", { name: uniqueName(), isPrivate: true })).body;
+    const [alice, bob] = [await home.member("alice"), await home.member("bob")];
+    const room = (await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName(), isPrivate: true })).body;
     await alice.call("POST", `/api/channels/${room.id}/members`, { userIds: [bob.id] });
     const [one, two, three] = [await post(alice, room.id, "one"), await post(alice, room.id, "two"), await post(alice, room.id, "three")];
 
     for (const m of [two, one, three]) expect((await bob.call("PUT", `/api/messages/${m.id}/save`)).status).toBe(204);
     await bob.call("PUT", `/api/messages/${one.id}/save`); // idempotent
-    const saved = async (who: Client) => texts((await who.call<MessagePage>("GET", "/api/saved")).body);
+    const saved = async (who: Client) => texts((await who.call<MessagePage>("GET", home.path("/saved"))).body);
     expect(await saved(bob)).toEqual(["three", "one", "two"]);
     expect(await saved(alice)).toEqual([]);
 
@@ -85,7 +86,7 @@ describe("saved messages", () => {
     await alice.call("DELETE", `/api/messages/${two.id}`);
     expect(await saved(bob)).toEqual(["three"]);
 
-    const outsider = await signIn(base(), "carol");
+    const outsider = await home.member("carol");
     expect((await outsider.call("PUT", `/api/messages/${three.id}/save`)).status).toBe(404);
   });
 });

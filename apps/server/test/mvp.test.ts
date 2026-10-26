@@ -1,49 +1,51 @@
 import { describe, expect, it } from "vitest";
 import type { Channel, Message, MessagePage } from "@chatter/shared";
-import { connect, signIn, uniqueName, useCluster } from "./helpers";
+import { connect, uniqueName, useCluster, useWorkspace } from "./helpers";
 
 const { urls } = useCluster();
 const base = () => urls[0]!;
+const home = useWorkspace(base);
 
 describe("MVP chat workflow", () => {
   it("signs up, reports the session user, and logs out", async () => {
-    const alice = await signIn(base(), "alice");
+    const alice = await home.member("alice");
     expect((await alice.call("GET", "/api/auth/me")).body).toMatchObject({ id: alice.id, displayName: "alice" });
     expect((await alice.call("POST", "/api/auth/logout")).status).toBe(204);
     expect((await alice.call("GET", "/api/auth/me")).status).toBe(401);
   });
 
   it("rejects unauthenticated API and WebSocket access", async () => {
-    expect((await fetch(`${base()}/api/channels`)).status).toBe(401);
+    expect((await fetch(`${base()}/api/workspaces`)).status).toBe(401);
+    expect((await fetch(`${base()}${home.path("/channels")}`)).status).toBe(401);
     const { ws } = connect(base());
     const status = await new Promise<number>((resolve) => ws.on("unexpected-response", (_req, res) => resolve(res.statusCode!)));
     expect(status).toBe(401);
   });
 
   it("creates channels with unique normalized names", async () => {
-    const alice = await signIn(base(), "alice");
+    const alice = await home.member("alice");
     const name = uniqueName();
-    const created = await alice.call("POST", "/api/channels", { name: name.toUpperCase() });
+    const created = await alice.call("POST", home.path("/channels"), { name: name.toUpperCase() });
     expect(created.status).toBe(201);
     expect(created.body).toMatchObject({ name, kind: "public", isMember: true, unreadCount: 0, mentionCount: 0 });
-    expect((await alice.call("POST", "/api/channels", { name })).status).toBe(409);
-    expect((await alice.call("POST", "/api/channels", { name: "bad name!" })).status).toBe(400);
+    expect((await alice.call("POST", home.path("/channels"), { name })).status).toBe(409);
+    expect((await alice.call("POST", home.path("/channels"), { name: "bad name!" })).status).toBe(400);
   });
 
   it("accepts Korean channel names and treats composed and decomposed Hangul as one name", async () => {
-    const alice = await signIn(base(), "alice");
+    const alice = await home.member("alice");
     const name = `개발-${uniqueName()}`;
-    const created = await alice.call<Channel>("POST", "/api/channels", { name });
+    const created = await alice.call<Channel>("POST", home.path("/channels"), { name });
     expect(created.status).toBe(201);
     expect(created.body.name).toBe(name);
-    expect((await alice.call("POST", "/api/channels", { name: name.normalize("NFD") })).status).toBe(409);
-    expect((await alice.call("POST", "/api/channels", { name: "공지 사항" })).status).toBe(400);
+    expect((await alice.call("POST", home.path("/channels"), { name: name.normalize("NFD") })).status).toBe(409);
+    expect((await alice.call("POST", home.path("/channels"), { name: "공지 사항" })).status).toBe(400);
   });
 
   it("delivers messages in realtime to members and tracks unread counts", async () => {
-    const alice = await signIn(base(), "alice");
-    const bob = await signIn(base(), "bob");
-    const channel = (await alice.call<Channel>("POST", "/api/channels", { name: uniqueName() })).body;
+    const alice = await home.member("alice");
+    const bob = await home.member("bob");
+    const channel = (await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName() })).body;
 
     expect((await bob.call("POST", `/api/channels/${channel.id}/messages`, { text: "hi", clientMsgId: "x" })).status).toBe(403);
     expect((await bob.call("POST", `/api/channels/${channel.id}/join`)).status).toBe(204);
@@ -57,7 +59,7 @@ describe("MVP chat workflow", () => {
     expect(event.message).toMatchObject({ id: sent.body.id, text: "hello *bob*", author: { displayName: "alice" } });
 
     const unread = async (who: typeof bob) =>
-      (await who.call<Channel[]>("GET", "/api/channels")).body.find((c) => c.id === channel.id)!.unreadCount;
+      (await who.call<Channel[]>("GET", home.path("/channels"))).body.find((c) => c.id === channel.id)!.unreadCount;
     expect(await unread(bob)).toBe(1);
     expect(await unread(alice)).toBe(0); // own messages are never unread
 
@@ -67,8 +69,8 @@ describe("MVP chat workflow", () => {
   });
 
   it("treats a retried send with the same clientMsgId as the original", async () => {
-    const alice = await signIn(base(), "alice");
-    const channel = (await alice.call<Channel>("POST", "/api/channels", { name: uniqueName() })).body;
+    const alice = await home.member("alice");
+    const channel = (await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName() })).body;
     const first = await alice.call<Message>("POST", `/api/channels/${channel.id}/messages`, { text: "once", clientMsgId: "retry" });
     const second = await alice.call<Message>("POST", `/api/channels/${channel.id}/messages`, { text: "once", clientMsgId: "retry" });
     expect(first.status).toBe(201);
@@ -79,8 +81,8 @@ describe("MVP chat workflow", () => {
   });
 
   it("pages history backwards with a before cursor", async () => {
-    const alice = await signIn(base(), "alice");
-    const channel = (await alice.call<Channel>("POST", "/api/channels", { name: uniqueName() })).body;
+    const alice = await home.member("alice");
+    const channel = (await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName() })).body;
     for (let i = 1; i <= 5; i++) {
       await alice.call("POST", `/api/channels/${channel.id}/messages`, { text: `m${i}`, clientMsgId: `p${i}` });
     }
@@ -94,12 +96,12 @@ describe("MVP chat workflow", () => {
   });
 
   it("marks existing history as read when joining", async () => {
-    const alice = await signIn(base(), "alice");
-    const carol = await signIn(base(), "carol");
-    const channel = (await alice.call<Channel>("POST", "/api/channels", { name: uniqueName() })).body;
+    const alice = await home.member("alice");
+    const carol = await home.member("carol");
+    const channel = (await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName() })).body;
     await alice.call("POST", `/api/channels/${channel.id}/messages`, { text: "before join", clientMsgId: "b1" });
     await carol.call("POST", `/api/channels/${channel.id}/join`);
-    const list = (await carol.call<Channel[]>("GET", "/api/channels")).body;
+    const list = (await carol.call<Channel[]>("GET", home.path("/channels"))).body;
     expect(list.find((c) => c.id === channel.id)).toMatchObject({ isMember: true, unreadCount: 0 });
   });
 });

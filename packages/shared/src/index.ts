@@ -14,6 +14,53 @@ export const channelNameSchema = z
       .regex(/^[\p{L}\p{N}][\p{L}\p{N}_-]{0,79}$/u, "글자(한글·영문 등), 숫자, -, _ 만 쓸 수 있고 공백은 안 됩니다 (최대 80자)"),
   );
 
+// Workspaces.
+
+export const workspaceRoles = ["owner", "admin", "member", "guest"] as const;
+export type WorkspaceRole = (typeof workspaceRoles)[number];
+/** Roles that can be granted; ownership is never handed out through an invite or role change. */
+export const grantableRoles = ["admin", "member", "guest"] as const;
+export type GrantableRole = (typeof grantableRoles)[number];
+
+const domain = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/, "도메인 형식이 아닙니다 (예: example.com)");
+
+export const workspaceParams = z.object({ workspaceId: z.uuid() });
+export const workspaceMemberParams = workspaceParams.extend({ userId: z.uuid() });
+
+export const createWorkspaceInput = z.object({
+  name: z.string().trim().min(1).max(80),
+  joinDomain: domain.nullable().default(null),
+});
+export const updateWorkspaceInput = createWorkspaceInput;
+
+export const roleInput = z.object({ role: z.enum(grantableRoles) });
+
+export const MAX_GUEST_DAYS = 365;
+
+export const createInviteInput = z
+  .object({
+    role: z.enum(grantableRoles).default("member"),
+    /** Bind the link to one address; it then works once. */
+    email: z.email().transform((e) => e.toLowerCase()).nullable().default(null),
+    /** Accepting also adds the person to this channel. */
+    channelId: z.uuid().nullable().default(null),
+    /** Guests who join through it leave after this many days. */
+    guestDays: z.number().int().min(1).max(MAX_GUEST_DAYS).nullable().default(null),
+  })
+  .refine((i) => i.guestDays === null || i.role === "guest", { message: "기간은 게스트 초대에만 정할 수 있습니다", path: ["guestDays"] });
+
+export const createWebhookInput = z.object({
+  channelId: z.uuid(),
+  name: z.string().trim().min(1).max(80),
+});
+
+/** What an incoming webhook accepts. */
+export const webhookMessageInput = z.object({ text: z.string().trim().min(1).max(4000) });
+
 export const createChannelInput = z.object({
   name: channelNameSchema,
   topic: z.string().trim().max(250).default(""),
@@ -99,6 +146,7 @@ export const pushSubscriptionInput = z.object({
 export const pushUnsubscribeInput = z.object({ endpoint: z.string().max(2048) });
 
 export const searchQuery = z.object({
+  workspaceId: z.uuid(),
   /** Words separated by spaces; every word must appear (case-insensitive substring). */
   q: z
     .string()
@@ -152,12 +200,67 @@ export interface User {
 export interface Member {
   id: string;
   displayName: string;
+  role: WorkspaceRole;
+  /** When a guest's access ends; null = no end. */
+  expiresAt: string | null;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
+  /** People with a verified email at this domain may join without an invite. */
+  joinDomain: string | null;
+  /** The viewer's role. */
+  role: WorkspaceRole;
+}
+
+export interface JoinableWorkspace {
+  id: string;
+  name: string;
+  memberCount: number;
+}
+
+export interface Invite {
+  id: string;
+  role: GrantableRole;
+  email: string | null;
+  channelId: string | null;
+  guestDays: number | null;
+  expiresAt: string;
+  usedAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+  /** The link, only in the response that created it. */
+  url?: string;
+}
+
+export interface InvitePreview {
+  workspace: { id: string; name: string };
+  /** The channel accepting adds them to, if any. */
+  channel: { id: string; name: string } | null;
+  inviter: string;
+  role: GrantableRole;
+  email: string | null;
+  guestDays: number | null;
+  expiresAt: string;
+  /** The viewer already belongs to the workspace. */
+  alreadyMember: boolean;
+}
+
+export interface Webhook {
+  id: string;
+  channelId: string;
+  name: string;
+  createdAt: string;
+  /** The secret URL, only in the response that created it. */
+  url?: string;
 }
 
 export type ChannelKind = "public" | "private" | "dm";
 
 export interface ChannelSummary {
   id: string;
+  workspaceId: string;
   kind: ChannelKind;
   /** Null for DMs, which are named after their members. */
   name: string | null;
@@ -244,6 +347,9 @@ export type ServerEvent =
    * the recipient's own membership; per-user counts come from the channel list.
    */
   | { type: "channel.added"; channel: ChannelSummary; isMember: boolean }
-  | { type: "member.joined"; member: Member }
+  | { type: "member.joined"; workspaceId: string; member: Member }
+  | { type: "member.updated"; workspaceId: string; member: Member }
+  /** Sent to the workspace's members, including the person removed. */
+  | { type: "member.removed"; workspaceId: string; userId: string }
   | { type: "presence.changed"; userId: string; status: PresenceStatus }
   | { type: "typing"; channelId: string; parentId: number | null; userId: string };

@@ -9,7 +9,11 @@ const LOGIN_COOKIE = "oidc_login";
 const LOGIN_TTL_S = 10 * 60;
 const CALLBACK_PATH = "/api/auth/oidc/callback";
 
-export async function authRoutes(app: FastifyInstance, { db, hub, oidc, publicUrl, cookieSecure, authRateLimit }: AppDeps) {
+/** A same-origin path to return to after sign-in; anything else falls back to the home page. */
+const safeReturnPath = (value: unknown) =>
+  typeof value === "string" && value.startsWith("/") && !value.startsWith("//") && !value.includes("\\") && value.length <= 512 ? value : "/";
+
+export async function authRoutes(app: FastifyInstance, { db, oidc, publicUrl, cookieSecure, authRateLimit }: AppDeps) {
   // Per client IP: generous for people, tight for scripted abuse.
   const authLimit = { rateLimit: { max: authRateLimit, timeWindow: "1 minute" } };
 
@@ -19,7 +23,8 @@ export async function authRoutes(app: FastifyInstance, { db, hub, oidc, publicUr
 
   app.get("/api/auth/oidc/start", { config: authLimit }, async (req, reply) => {
     const { url, pending } = await oidc.start(`${origin(req)}${CALLBACK_PATH}`);
-    reply.setCookie(LOGIN_COOKIE, Buffer.from(JSON.stringify(pending)).toString("base64url"), {
+    const returnTo = safeReturnPath((req.query as { returnTo?: unknown }).returnTo);
+    reply.setCookie(LOGIN_COOKIE, Buffer.from(JSON.stringify({ ...pending, returnTo })).toString("base64url"), {
       httpOnly: true,
       // Lax so the cookie comes back on the provider's top-level redirect.
       sameSite: "lax",
@@ -33,9 +38,9 @@ export async function authRoutes(app: FastifyInstance, { db, hub, oidc, publicUr
   app.get(CALLBACK_PATH, { config: authLimit }, async (req, reply) => {
     const raw = req.cookies[LOGIN_COOKIE];
     reply.clearCookie(LOGIN_COOKIE, { path: "/api/auth/oidc" });
-    let pending: PendingLogin;
+    let pending: PendingLogin & { returnTo?: string };
     try {
-      pending = JSON.parse(Buffer.from(raw ?? "", "base64url").toString("utf8")) as PendingLogin;
+      pending = JSON.parse(Buffer.from(raw ?? "", "base64url").toString("utf8")) as PendingLogin & { returnTo?: string };
       if (!pending.verifier || !pending.state || !pending.nonce) throw new Error("incomplete");
     } catch {
       return failed(reply, "login_expired");
@@ -54,7 +59,7 @@ export async function authRoutes(app: FastifyInstance, { db, hub, oidc, publicUr
       path: "/",
       maxAge: SESSION_TTL_MS / 1000,
     });
-    return reply.redirect("/");
+    return reply.redirect(safeReturnPath(pending.returnTo));
   });
 
   /**
@@ -81,10 +86,7 @@ export async function authRoutes(app: FastifyInstance, { db, hub, oidc, publicUr
       .values({ email: identity.email, displayName: identity.name, oidcIssuer: identity.issuer, oidcSubject: identity.subject })
       .onConflictDoNothing({ target: users.email })
       .returning({ id: users.id, displayName: users.displayName });
-    if (!created) return null;
-    // Single workspace: everyone's directory gains the new member.
-    hub.publish({ all: true }, { type: "member.joined", member: { id: created.id, displayName: created.displayName } });
-    return created.id;
+    return created?.id ?? null;
   };
 
   app.post("/api/auth/logout", async (req, reply) => {

@@ -7,8 +7,10 @@ const HEARTBEAT_MS = 30_000;
 const PRESENCE_REFRESH_MS = 20_000;
 const PRESENCE_TTL_S = 60;
 
-export type Target = { users: Iterable<string> } | { all: true; except?: Iterable<string> };
-type WireTarget = { users: string[] } | { all: true; except: string[] };
+export interface Target {
+  users: Iterable<string>;
+}
+type WireTarget = { users: string[] };
 
 interface SocketState {
   userId: string;
@@ -19,6 +21,8 @@ interface SocketState {
 }
 
 export type ClientEventHandler = (userId: string, event: Extract<ClientEvent, { type: "typing" }>) => void;
+/** Who may see a person's presence: people who share a workspace with them. */
+export type PresenceAudience = (userId: string) => Promise<string[]>;
 
 /**
  * Cluster-wide fan-out of server events plus presence and tab focus.
@@ -37,6 +41,7 @@ export class RealtimeHub {
   private readonly nodeKey: string;
   private readonly timers: NodeJS.Timeout[] = [];
   private onClientEvent: ClientEventHandler = () => {};
+  private presenceAudience: PresenceAudience = async (userId) => [userId];
 
   private constructor(
     redisUrl: string,
@@ -63,6 +68,10 @@ export class RealtimeHub {
     this.onClientEvent = handler;
   }
 
+  setPresenceAudience(audience: PresenceAudience) {
+    this.presenceAudience = audience;
+  }
+
   add(userId: string, socket: WebSocket): void {
     const state: SocketState = { userId, active: true, focused: false, alive: true };
     this.sockets.set(socket, state);
@@ -77,9 +86,8 @@ export class RealtimeHub {
   }
 
   publish(target: Target, event: ServerEvent): void {
-    const wire: WireTarget =
-      "users" in target ? { users: [...target.users] } : { all: true, except: [...(target.except ?? [])] };
-    if ("users" in wire && wire.users.length === 0) return;
+    const wire: WireTarget = { users: [...target.users] };
+    if (wire.users.length === 0) return;
     this.pub.publish(this.channel, JSON.stringify({ target: wire, event })).catch((err) => this.log("publish failed", err));
   }
 
@@ -143,10 +151,9 @@ export class RealtimeHub {
   private deliver(raw: string) {
     const { target, event } = JSON.parse(raw) as { target: WireTarget; event: ServerEvent };
     const payload = JSON.stringify(event);
-    const users = "users" in target ? new Set(target.users) : null;
-    const except = "all" in target ? new Set(target.except) : null;
+    const users = new Set(target.users);
     for (const [socket, { userId }] of this.sockets) {
-      if (users ? users.has(userId) : !except!.has(userId)) socket.send(payload);
+      if (users.has(userId)) socket.send(payload);
     }
   }
 
@@ -154,7 +161,7 @@ export class RealtimeHub {
     try {
       await this.syncPresence();
       const status: PresenceStatus = (await this.presence())[userId] ?? "offline";
-      this.publish({ all: true }, { type: "presence.changed", userId, status });
+      this.publish({ users: await this.presenceAudience(userId) }, { type: "presence.changed", userId, status });
     } catch (err) {
       this.log("presence update failed", err);
     }

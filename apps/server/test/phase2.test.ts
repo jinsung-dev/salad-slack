@@ -1,23 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { CHANNEL_MENTION, mentionToken, type Channel, type Message, type MessagePage, type PresenceMap } from "@chatter/shared";
-import { connect, signIn, uniqueName, useCluster, type Client } from "./helpers";
+import { connect, signIn, uniqueName, useCluster, type Client, useWorkspace } from "./helpers";
 
 // Two nodes: users talk to node A, realtime listeners sit on node B unless noted,
 // so every delivery below crosses the Redis bus.
 const { urls } = useCluster(2);
 const nodeA = () => urls[0]!;
 const nodeB = () => urls[1]!;
+const home = useWorkspace(nodeA);
 
-const channelOf = async (who: Client, id: string) => (await who.call<Channel[]>("GET", "/api/channels")).body.find((c) => c.id === id);
+const channelOf = async (who: Client, id: string) => (await who.call<Channel[]>("GET", home.path("/channels"))).body.find((c) => c.id === id);
 const post = (who: Client, channelId: string, text: string, extra: Record<string, unknown> = {}) =>
   who.call<Message>("POST", `/api/channels/${channelId}/messages`, { text, clientMsgId: crypto.randomUUID(), ...extra });
 
 async function team<const N extends readonly string[]>(...names: N) {
-  return (await Promise.all(names.map((n) => signIn(nodeA(), n)))) as { -readonly [K in keyof N]: Client };
+  return (await Promise.all(names.map((n) => home.member(n)))) as { -readonly [K in keyof N]: Client };
 }
 
 async function publicChannel(owner: Client, ...members: Client[]) {
-  const channel = (await owner.call<Channel>("POST", "/api/channels", { name: uniqueName() })).body;
+  const channel = (await owner.call<Channel>("POST", home.path("/channels"), { name: uniqueName() })).body;
   for (const m of members) await m.call("POST", `/api/channels/${channel.id}/join`);
   return channel;
 }
@@ -33,12 +34,15 @@ describe("cluster delivery", () => {
     bobSocket.ws.close();
   });
 
-  it("announces new members to everyone's directory", async () => {
+  it("announces new members to the workspace directory", async () => {
     const [alice] = await team("alice");
     const aliceSocket = connect(nodeB(), alice.cookie);
     await aliceSocket.ready();
     const [dana] = await team("dana");
-    expect(await aliceSocket.next("member.joined", (e) => e.member.id === dana.id)).toMatchObject({ member: { displayName: "dana" } });
+    expect(await aliceSocket.next("member.joined", (e) => e.member.id === dana.id)).toMatchObject({
+      workspaceId: home.id,
+      member: { displayName: "dana", role: "member" },
+    });
     aliceSocket.ws.close();
   });
 });
@@ -49,7 +53,7 @@ describe("private channels", () => {
     const bobSocket = connect(nodeB(), bob.cookie);
     await bobSocket.ready();
 
-    const created = await alice.call<Channel>("POST", "/api/channels", { name: uniqueName(), isPrivate: true });
+    const created = await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName(), isPrivate: true });
     expect(created.body).toMatchObject({ kind: "private", isMember: true });
     const id = created.body.id;
     await post(alice, id, "secret");
@@ -72,7 +76,7 @@ describe("private channels", () => {
     const [alice, bob] = await team("alice", "bob");
     const [aliceSocket, bobSocket] = [connect(nodeB(), alice.cookie), connect(nodeB(), bob.cookie)];
     await Promise.all([aliceSocket.ready(), bobSocket.ready()]);
-    const channel = (await alice.call<Channel>("POST", "/api/channels", { name: uniqueName() })).body;
+    const channel = (await alice.call<Channel>("POST", home.path("/channels"), { name: uniqueName() })).body;
     expect(await aliceSocket.next("channel.added", (e) => e.channel.id === channel.id)).toMatchObject({ isMember: true });
     expect(await bobSocket.next("channel.added", (e) => e.channel.id === channel.id)).toMatchObject({ isMember: false });
     aliceSocket.ws.close();
@@ -86,23 +90,23 @@ describe("direct messages", () => {
     const bobSocket = connect(nodeB(), bob.cookie);
     await bobSocket.ready();
 
-    const first = await alice.call<Channel>("POST", "/api/dms", { userIds: [bob.id] });
+    const first = await alice.call<Channel>("POST", home.path("/dms"), { userIds: [bob.id] });
     expect(first.status).toBe(201);
     expect(first.body).toMatchObject({ kind: "dm", name: null, isMember: true, memberIds: [alice.id, bob.id].sort() });
     expect((await bobSocket.next("channel.added", (e) => e.channel.id === first.body.id)).isMember).toBe(true);
 
-    const again = await bob.call<Channel>("POST", "/api/dms", { userIds: [alice.id, bob.id] });
+    const again = await bob.call<Channel>("POST", home.path("/dms"), { userIds: [alice.id, bob.id] });
     expect(again.status).toBe(200);
     expect(again.body.id).toBe(first.body.id);
 
-    const group = await alice.call<Channel>("POST", "/api/dms", { userIds: [bob.id, carol.id] });
+    const group = await alice.call<Channel>("POST", home.path("/dms"), { userIds: [bob.id, carol.id] });
     expect(group.body.id).not.toBe(first.body.id);
     expect(group.body.memberIds).toHaveLength(3);
     expect(await channelOf(carol, first.body.id)).toBeUndefined();
     expect((await alice.call("POST", `/api/channels/${first.body.id}/members`, { userIds: [carol.id] })).status).toBe(400);
 
     const tooMany = Array.from({ length: 8 }, () => crypto.randomUUID());
-    expect((await alice.call("POST", "/api/dms", { userIds: tooMany })).status).toBe(400);
+    expect((await alice.call("POST", home.path("/dms"), { userIds: tooMany })).status).toBe(400);
     bobSocket.ws.close();
   });
 });
@@ -244,7 +248,7 @@ describe("presence and typing", () => {
     const [alice, bob] = await team("alice", "bob");
     const aliceSocket = connect(nodeA(), alice.cookie);
     await aliceSocket.ready();
-    const presence = async () => (await alice.call<PresenceMap>("GET", "/api/presence")).body[bob.id];
+    const presence = async () => (await alice.call<PresenceMap>("GET", home.path("/presence"))).body[bob.id];
 
     expect(await presence()).toBeUndefined();
     const bobSocket = connect(nodeB(), bob.cookie);

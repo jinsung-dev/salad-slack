@@ -4,9 +4,11 @@ import type { PresenceStatus } from "@chatter/shared";
 import { api } from "../api";
 import { keys } from "../cache";
 import { useDirectory } from "../directory";
+import { useCurrentWorkspace } from "../workspace";
 
 export function usePresence(userId: string | undefined): PresenceStatus {
-  const presence = useQuery({ queryKey: keys.presence, queryFn: api.presence, refetchInterval: 60_000 });
+  const { id } = useCurrentWorkspace();
+  const presence = useQuery({ queryKey: keys.presence(id), queryFn: () => api.presence(id), refetchInterval: 60_000 });
   return (userId && presence.data?.[userId]) || "offline";
 }
 
@@ -70,6 +72,7 @@ export function UserPicker({
                 <input type="checkbox" checked={selected.includes(u.id)} onChange={() => toggle(u.id)} />
                 <PresenceDot userId={u.id} />
                 {u.displayName}
+                {u.role === "guest" && <span className="guest-badge">게스트</span>}
               </label>
             </li>
           ))}

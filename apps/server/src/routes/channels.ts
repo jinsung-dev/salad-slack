@@ -1,25 +1,43 @@
 import type { FastifyInstance } from "fastify";
-import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
-import { channelParams, createChannelInput, createDmInput, historyQuery, inviteInput, markReadInput, notifyInput, type MessagePage } from "@chatter/shared";
+import { and, desc, eq, lt, or, sql } from "drizzle-orm";
+import {
+  channelParams,
+  createChannelInput,
+  createDmInput,
+  historyQuery,
+  inviteInput,
+  markReadInput,
+  notifyInput,
+  workspaceParams,
+  type MessagePage,
+} from "@chatter/shared";
 import type { AppDeps } from "../app";
-import { channelMembers, channels, messages, users } from "../db/schema";
-import { channelAccess, channelFor, channelSummary, listChannels, loadMessages } from "../queries";
+import { channelMembers, channels, messages } from "../db/schema";
+import { addChannelMembers, channelAccess, channelFor, channelSummary, listChannels, loadMessages } from "../queries";
+import { requireRole, workspaceMemberIds } from "../workspaces";
 
 export async function channelRoutes(app: FastifyInstance, { db, hub }: AppDeps) {
   app.addHook("preHandler", async (req, reply) => {
     if (!req.user) return reply.code(401).send({ error: "unauthenticated" });
   });
 
-  app.get("/api/channels", async (req) => listChannels(db, req.user!.id));
+  app.get("/api/workspaces/:workspaceId/channels", async (req, reply) => {
+    const { workspaceId } = workspaceParams.parse(req.params);
+    if (!(await requireRole(db, reply, workspaceId, req.user!.id, "guest"))) return;
+    return listChannels(db, req.user!.id, workspaceId);
+  });
 
-  app.post("/api/channels", async (req, reply) => {
+  // Members and above create channels; guests only join what they are invited to.
+  app.post("/api/workspaces/:workspaceId/channels", async (req, reply) => {
+    const { workspaceId } = workspaceParams.parse(req.params);
     const input = createChannelInput.parse(req.body);
     const me = req.user!.id;
+    if (!(await requireRole(db, reply, workspaceId, me, "member"))) return;
     const created = await db.transaction(async (tx) => {
       const [row] = await tx
         .insert(channels)
-        .values({ kind: input.isPrivate ? "private" : "public", name: input.name, topic: input.topic, createdBy: me })
-        .onConflictDoNothing({ target: channels.name })
+        .values({ workspaceId, kind: input.isPrivate ? "private" : "public", name: input.name, topic: input.topic, createdBy: me })
+        .onConflictDoNothing({ target: [channels.workspaceId, channels.name] })
         .returning();
       if (row) await tx.insert(channelMembers).values({ channelId: row.id, userId: me });
       return row;
@@ -28,22 +46,28 @@ export async function channelRoutes(app: FastifyInstance, { db, hub }: AppDeps) 
 
     const summary = await channelSummary(db, created);
     hub.publish({ users: [me] }, { type: "channel.added", channel: summary, isMember: true });
-    if (created.kind === "public") hub.publish({ all: true, except: [me] }, { type: "channel.added", channel: summary, isMember: false });
+    if (created.kind === "public") {
+      const others = (await workspaceMemberIds(db, workspaceId, { includeGuests: false })).filter((id) => id !== me);
+      hub.publish({ users: others }, { type: "channel.added", channel: summary, isMember: false });
+    }
     return reply.code(201).send(await channelFor(db, me, created.id));
   });
 
-  // One conversation per set of people: asking again returns the same DM.
-  app.post("/api/dms", async (req, reply) => {
+  // One conversation per set of people in a workspace: asking again returns the same DM.
+  app.post("/api/workspaces/:workspaceId/dms", async (req, reply) => {
+    const { workspaceId } = workspaceParams.parse(req.params);
     const me = req.user!.id;
+    if (!(await requireRole(db, reply, workspaceId, me, "member"))) return;
     const ids = [...new Set([me, ...createDmInput.parse(req.body).userIds])].sort();
-    const found = await db.select({ id: users.id }).from(users).where(inArray(users.id, ids));
-    if (found.length !== ids.length) return reply.code(400).send({ error: "unknown_user" });
+    const inWorkspace = new Set(await workspaceMemberIds(db, workspaceId));
+    if (!ids.every((id) => inWorkspace.has(id))) return reply.code(400).send({ error: "unknown_user" });
 
+    const dmKey = ids.join(",");
     const created = await db.transaction(async (tx) => {
       const [row] = await tx
         .insert(channels)
-        .values({ kind: "dm", dmKey: ids.join(","), createdBy: me })
-        .onConflictDoNothing({ target: channels.dmKey })
+        .values({ workspaceId, kind: "dm", dmKey, createdBy: me })
+        .onConflictDoNothing({ target: [channels.workspaceId, channels.dmKey] })
         .returning();
       if (row) await tx.insert(channelMembers).values(ids.map((userId) => ({ channelId: row.id, userId })));
       return row;
@@ -51,8 +75,18 @@ export async function channelRoutes(app: FastifyInstance, { db, hub }: AppDeps) 
     if (created) {
       hub.publish({ users: ids }, { type: "channel.added", channel: await channelSummary(db, created), isMember: true });
     }
-    const [existing] = await db.select({ id: channels.id }).from(channels).where(eq(channels.dmKey, ids.join(",")));
+    const [existing] = await db
+      .select({ id: channels.id })
+      .from(channels)
+      .where(and(eq(channels.workspaceId, workspaceId), eq(channels.dmKey, dmKey)));
     return reply.code(created ? 201 : 200).send(await channelFor(db, me, existing!.id));
+  });
+
+  // One conversation the viewer can see, with its workspace: resolves links that carry only a channel id.
+  app.get("/api/channels/:id", async (req, reply) => {
+    const { id } = channelParams.parse(req.params);
+    if (!(await channelAccess(db, id, req.user!.id))) return reply.code(404).send({ error: "channel_not_found" });
+    return channelFor(db, req.user!.id, id);
   });
 
   app.post("/api/channels/:id/join", async (req, reply) => {
@@ -60,36 +94,26 @@ export async function channelRoutes(app: FastifyInstance, { db, hub }: AppDeps) 
     const access = await channelAccess(db, id, req.user!.id);
     if (!access) return reply.code(404).send({ error: "channel_not_found" });
     if (access.channel.kind !== "public") return reply.code(403).send({ error: "invite_only" });
-    await addMembers(id, [req.user!.id]);
+    await addChannelMembers(db, id, access.channel.workspaceId, [req.user!.id]);
     hub.publish({ users: [req.user!.id] }, { type: "channel.added", channel: await channelSummary(db, access.channel), isMember: true });
     return reply.code(204).send();
   });
 
+  // Members of a channel add others from the same workspace; guests cannot add anyone.
   app.post("/api/channels/:id/members", async (req, reply) => {
     const { id } = channelParams.parse(req.params);
     const { userIds } = inviteInput.parse(req.body);
     const access = await channelAccess(db, id, req.user!.id);
     if (!access) return reply.code(404).send({ error: "channel_not_found" });
-    if (!access.isMember) return reply.code(403).send({ error: "not_a_member" });
+    if (!access.isMember || access.role === "guest") return reply.code(403).send({ error: "not_allowed" });
     if (access.channel.kind === "dm") return reply.code(400).send({ error: "dm_members_fixed" });
-    const found = await db.select({ id: users.id }).from(users).where(inArray(users.id, userIds));
-    if (found.length !== new Set(userIds).size) return reply.code(400).send({ error: "unknown_user" });
+    const inWorkspace = new Set(await workspaceMemberIds(db, access.channel.workspaceId));
+    if (!userIds.every((u) => inWorkspace.has(u))) return reply.code(400).send({ error: "unknown_user" });
 
-    const added = await addMembers(id, userIds);
+    const added = await addChannelMembers(db, id, access.channel.workspaceId, userIds);
     hub.publish({ users: added }, { type: "channel.added", channel: await channelSummary(db, access.channel), isMember: true });
     return reply.code(204).send();
   });
-
-  /** Adds members with existing history marked read; returns who was newly added. */
-  const addMembers = async (channelId: string, userIds: string[]) => {
-    const { rows } = await db.execute<{ user_id: string }>(sql`
-      insert into channel_members (channel_id, user_id, last_read_message_id)
-      select ${channelId}, u.id, (select coalesce(max(id), 0) from messages where channel_id = ${channelId})
-      from users u where u.id in ${userIds}
-      on conflict do nothing
-      returning user_id`);
-    return rows.map((r) => r.user_id);
-  };
 
   // Public channels are readable before joining, like a preview.
   app.get("/api/channels/:id/messages", async (req, reply): Promise<MessagePage> => {

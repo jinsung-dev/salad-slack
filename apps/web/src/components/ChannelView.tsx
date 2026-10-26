@@ -10,13 +10,17 @@ import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { MessageRow } from "./MessageRow";
 import { PresenceDot, UserPicker } from "./People";
+import { ChannelInviteDialog } from "./ChannelInvite";
 import { NotifySelect } from "./Settings";
+import { useCurrentWorkspace, workspacePath } from "../workspace";
 
 export function ChannelView({ channel, me }: { channel: Channel; me: User }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const { names } = useDirectory();
   const [inviting, setInviting] = useState(false);
+  const [invitingOutsider, setInvitingOutsider] = useState(false);
+  const workspace = useCurrentWorkspace();
   const history = useInfiniteQuery({
     queryKey: keys.messages(channel.id),
     queryFn: ({ pageParam }) => api.history(channel.id, pageParam),
@@ -44,7 +48,7 @@ export function ChannelView({ channel, me }: { channel: Channel; me: User }) {
       markedRef.current = newestId;
       await api.markRead(channel.id, newestId);
       // Thread mentions survive a channel read; the server has the exact count.
-      void qc.invalidateQueries({ queryKey: keys.channels });
+      void qc.invalidateQueries({ queryKey: keys.channels(channel.workspaceId) });
     };
     void mark();
     const onVisible = () => void mark();
@@ -57,7 +61,7 @@ export function ChannelView({ channel, me }: { channel: Channel; me: User }) {
     updateChannel(qc, channel.id, (c) => ({ ...c, isMember: true, unreadCount: 0 }));
   };
 
-  const openThread = (id: number) => navigate(`/c/${channel.id}/t/${id}`);
+  const openThread = (id: number) => navigate(workspacePath(channel.workspaceId, `/c/${channel.id}/t/${id}`));
 
   return (
     <section className="channel">
@@ -76,9 +80,14 @@ export function ChannelView({ channel, me }: { channel: Channel; me: User }) {
           </h1>
           <div className="header-actions">
             {channel.isMember && <NotifySelect channelId={channel.id} level={channel.notify} />}
-            {channel.kind !== "dm" && channel.isMember && (
+            {channel.kind !== "dm" && channel.isMember && workspace.role !== "guest" && (
               <button className="secondary" onClick={() => setInviting(true)}>
                 사람 추가
+              </button>
+            )}
+            {channel.kind !== "dm" && channel.isMember && (workspace.role === "owner" || workspace.role === "admin") && (
+              <button className="secondary" onClick={() => setInvitingOutsider(true)}>
+                외부인 초대
               </button>
             )}
           </div>
@@ -97,7 +106,7 @@ export function ChannelView({ channel, me }: { channel: Channel; me: User }) {
             "불러오는 중…"
           ) : (
             <div className="channel-intro">
-              <h2>{channel.kind === "dm" ? label : `# ${label}`}</h2>
+              <h2>{channel.kind === "dm" ? label : `${channel.kind === "private" ? "🔒" : "#"} ${label}`}</h2>
               <p className="muted">{channel.kind === "dm" ? "대화의 시작입니다." : "채널의 시작입니다."}</p>
             </div>
           )
@@ -119,6 +128,7 @@ export function ChannelView({ channel, me }: { channel: Channel; me: User }) {
         </div>
       )}
 
+      {invitingOutsider && <ChannelInviteDialog channel={channel} onClose={() => setInvitingOutsider(false)} />}
       {inviting && (
         <UserPicker
           title={`#${label}에 사람 추가`}

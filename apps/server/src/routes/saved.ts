@@ -1,9 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, sql } from "drizzle-orm";
-import { messageParams, type MessagePage } from "@chatter/shared";
+import { messageParams, workspaceParams, type MessagePage } from "@chatter/shared";
 import type { AppDeps } from "../app";
 import { messages, savedMessages } from "../db/schema";
 import { channelAccess, loadMessages } from "../queries";
+import { requireRole } from "../workspaces";
 
 const SAVED_LIMIT = 200;
 
@@ -29,15 +30,19 @@ export async function savedRoutes(app: FastifyInstance, { db }: AppDeps) {
 
   // Most recently saved first, up to SAVED_LIMIT. Messages since deleted, or in
   // conversations the viewer can no longer read, are left out.
-  app.get("/api/saved", async (req): Promise<MessagePage> => {
+  app.get("/api/workspaces/:workspaceId/saved", async (req, reply): Promise<MessagePage | undefined> => {
+    const { workspaceId } = workspaceParams.parse(req.params);
     const me = req.user!.id;
+    if (!(await requireRole(db, reply, workspaceId, me, "guest"))) return;
     const { rows } = await db.execute<{ message_id: string }>(sql`
       select s.message_id
       from saved_messages s
       join messages m on m.id = s.message_id
       join channels c on c.id = m.channel_id
+      join workspace_members wm on wm.workspace_id = c.workspace_id and wm.user_id = ${me}
       left join channel_members cm on cm.channel_id = c.id and cm.user_id = ${me}
-      where s.user_id = ${me} and m.deleted_at is null and (c.kind = 'public' or cm.user_id is not null)
+      where s.user_id = ${me} and c.workspace_id = ${workspaceId} and m.deleted_at is null
+        and ((c.kind = 'public' and wm.role <> 'guest') or cm.user_id is not null)
       order by s.saved_at desc, s.message_id desc
       limit ${SAVED_LIMIT + 1}`);
     return { messages: await loadMessages(db, rows.slice(0, SAVED_LIMIT).map((r) => Number(r.message_id))), hasMore: rows.length > SAVED_LIMIT };

@@ -47,11 +47,19 @@ Gate (PRD): the dogfooding team holds 90%+ of work conversation in Chatter for 2
 
 Decisions: files on the server's local disk (one server; S3 needed for several), Postgres trigram search instead of a search engine. Started alongside the Phase 2 dogfooding gate (decision 2026-10-23).
 
-## Phase 4 — Platform
+## Phase 4 — Platform (P0 built; P1 next)
 
-- Multiple workspaces, invites, roles and permissions
-- Bots, incoming webhooks, slash commands
-- Structured message blocks
+- [x] Multiple workspaces: one account in several, switcher, data isolated per workspace (tested: channels, history, search, files, people, presence, events)
+- [x] Invites: links valid 7 days, optionally bound to one email (single use); join by verified email domain
+- [x] Roles: owner / admin / member / guest. Guests see only conversations they are added to and cannot create channels, DMs or invites
+- [x] Incoming webhooks: secret URL posts into a channel as its own bot; revocable
+- [x] Channel invites for outside guests: the link adds a guest to one channel; optional end date (7/30/90 days) removes them within a minute; guest badge on messages
+- [ ] Bot accounts and API with scopes, event subscriptions (P1)
+- [ ] Slash commands calling registered URLs (P1)
+- [ ] Structured message blocks (P2)
+
+Existing data moved into one workspace ("SaladLab") by migration 0010; the earliest account became its owner.
+Gate (PRD): an outside team onboards itself. The live server still limits sign-in to `saladlab.co` (`ALLOWED_EMAIL_DOMAINS`), which blocks that until lifted.
 
 ## Phase 5 — Advanced
 

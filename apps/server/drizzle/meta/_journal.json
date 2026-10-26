@@ -64,6 +64,34 @@
       "when": 1792738018044,
       "tag": "0008_saved_messages",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792741546052,
+      "tag": "0009_workspaces",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792741546444,
+      "tag": "0010_backfill_default_workspace",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1792741562611,
+      "tag": "0011_channels_per_workspace",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1792744189598,
+      "tag": "0012_channel_invites",
+      "breakpoints": true
     }
   ]
 }

@@ -237,3 +237,40 @@ button.icon { background: none; color: var(--fg); padding: 2px 6px; font-size: 1
 .setting h3 { margin: 0; font-size: 15px; }
 .setting p { margin: 0; }
 .setting .row { display: flex; align-items: center; gap: 8px; }
+
+/* Phase 4 */
+.switcher { position: relative; flex: 1; min-width: 0; }
+.switcher-button { background: none; color: #fff; padding: 0; font-size: 17px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.switcher-menu { position: absolute; top: 28px; left: 0; z-index: 30; min-width: 220px; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 6px; box-shadow: 0 4px 14px #00000033; }
+.switcher-menu button { background: none; color: var(--fg); text-align: left; padding: 7px 10px; font-size: 14px; }
+.switcher-menu button:hover { background: var(--hover); }
+.switcher-menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; width: 100%; }
+.switcher-menu .hint { margin: 2px 10px 4px; }
+
+.onboarding { width: min(460px, 100%); gap: 16px; }
+.onboarding h2 { font-size: 15px; margin: 0 0 8px; }
+.joinable { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.joinable li { display: flex; justify-content: space-between; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.stack { display: flex; flex-direction: column; gap: 8px; }
+.stack.narrow { max-width: 420px; }
+.stack label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+
+.admin { max-width: 860px; margin: 0 auto; padding: 24px 20px 60px; overflow-y: auto; height: 100%; }
+.admin-header h1 { margin: 8px 0 0; font-size: 22px; }
+.admin-section { margin-top: 28px; display: flex; flex-direction: column; gap: 10px; }
+.admin-section h2 { font-size: 17px; margin: 0; }
+.admin-table { border-collapse: collapse; width: 100%; font-size: 14px; }
+.admin-table td { border-top: 1px solid var(--border); padding: 8px 6px; }
+.admin-table select, .admin-section select { font: inherit; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); }
+.actions-cell { text-align: right; white-space: nowrap; }
+button.link.danger { color: var(--danger); }
+.row.wrap { flex-wrap: wrap; display: flex; gap: 8px; }
+.created { border: 1px solid var(--accent); border-radius: 8px; padding: 10px 12px; background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.created p { margin: 0 0 6px; }
+.copy-field { display: flex; gap: 6px; }
+.copy-field input { flex: 1; font-family: ui-monospace, monospace; font-size: 12px; }
+pre.example { background: var(--code-bg); border-radius: 6px; padding: 8px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0; }
+
+.guest-badge { display: inline-block; font-size: 11px; font-weight: 600; color: #92400e; background: #fde68a; border-radius: 4px; padding: 0 5px; margin-left: 4px; vertical-align: 1px; }
+.modal .stack label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.modal select { font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); }
