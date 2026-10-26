@@ -1,7 +1,18 @@
 import { useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router";
-import type { GrantableRole, Invite, User, Webhook, WorkspaceRole } from "@chatter/shared";
+import {
+  appEventTypes,
+  appScopes,
+  type App,
+  type AppEventType,
+  type AppScope,
+  type GrantableRole,
+  type Invite,
+  type User,
+  type Webhook,
+  type WorkspaceRole,
+} from "@chatter/shared";
 import { ApiError, api } from "../api";
 import { forgetWorkspace, keys } from "../cache";
 import { useDirectory } from "../directory";
@@ -25,6 +36,7 @@ export function WorkspaceAdmin({ me }: { me: User }) {
       <Members me={me} />
       {canManage && <Invites />}
       {canManage && <Webhooks />}
+      {canManage && <Apps />}
       {canManage && <WorkspaceSettings />}
     </div>
   );
@@ -294,5 +306,201 @@ function WorkspaceSettings() {
         {message && <p className="muted">{message}</p>}
       </form>
     </section>
+  );
+}
+
+const SCOPE_LABEL: Record<AppScope, string> = {
+  "chat:write": "chat:write — 들어가 있는 채널에 메시지 보내기",
+  "channels:read": "channels:read — 채널 목록 보기",
+  "channels:history": "channels:history — 들어가 있는 채널의 메시지 읽기",
+  "users:read": "users:read — 멤버 목록 보기",
+};
+const EVENT_LABEL: Record<AppEventType, string> = {
+  message: "message — 봇이 있는 채널의 새 메시지",
+  app_mention: "app_mention — 봇을 멘션한 메시지",
+};
+
+function Apps() {
+  const qc = useQueryClient();
+  const workspace = useCurrentWorkspace();
+  const list = useQuery({ queryKey: ["apps", workspace.id], queryFn: () => api.apps(workspace.id), staleTime: 0 });
+  const [issued, setIssued] = useState<App | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const refresh = () => {
+    void qc.invalidateQueries({ queryKey: ["apps", workspace.id] });
+    void qc.invalidateQueries({ queryKey: ["commands", workspace.id] });
+  };
+
+  const create = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const name = String(new FormData(form).get("name") ?? "").trim();
+    setError(null);
+    try {
+      setIssued(await api.createApp(workspace.id, name));
+      form.reset();
+      void refresh();
+      void qc.invalidateQueries({ queryKey: keys.members(workspace.id) });
+    } catch {
+      setError("앱을 만들지 못했습니다.");
+    }
+  };
+
+  return (
+    <section className="admin-section">
+      <h2>앱</h2>
+      <p className="muted hint">
+        앱은 봇 토큰으로 API를 쓰고, 이벤트와 슬래시 커맨드, 버튼 클릭을 앱 서버로 받습니다. 봇을 채널에 넣으려면 채널에서 &quot;사람 추가&quot;로 추가하세요.
+      </p>
+      <form onSubmit={create} className="row wrap">
+        <input name="name" placeholder="앱 이름 (예: 배포 봇)" aria-label="앱 이름" required maxLength={80} />
+        <button type="submit">앱 만들기</button>
+      </form>
+      {error && <p className="error">{error}</p>}
+      {issued?.token && (
+        <div className="created">
+          <p>
+            <strong>{issued.name}</strong>의 봇 토큰입니다. 지금만 볼 수 있습니다.
+          </p>
+          <CopyField value={issued.token} label="봇 토큰" />
+        </div>
+      )}
+      {(list.data ?? []).map((a) => (
+        <AppCard key={a.id} app={a} onIssued={setIssued} onChanged={() => void refresh()} />
+      ))}
+    </section>
+  );
+}
+
+function AppCard({ app, onIssued, onChanged }: { app: App; onIssued: (a: App) => void; onChanged: () => void }) {
+  const workspace = useCurrentWorkspace();
+  const [message, setMessage] = useState<string | null>(null);
+
+  const save = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    const url = (key: string) => String(form.get(key) ?? "").trim() || null;
+    try {
+      await api.updateApp(workspace.id, app.id, {
+        name: String(form.get("name") ?? "").trim(),
+        scopes: appScopes.filter((s) => form.get(`scope:${s}`) === "on"),
+        eventsUrl: url("eventsUrl"),
+        eventTypes: appEventTypes.filter((t) => form.get(`event:${t}`) === "on"),
+        interactivityUrl: url("interactivityUrl"),
+      });
+      setMessage("저장했습니다.");
+      onChanged();
+    } catch {
+      setMessage("저장하지 못했습니다. URL은 https://로 시작해야 합니다.");
+    }
+  };
+
+  const addCommand = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const formEl = e.currentTarget;
+    const form = new FormData(formEl);
+    try {
+      await api.addCommand(workspace.id, app.id, {
+        command: String(form.get("command") ?? "").replace(/^\//, "").trim(),
+        url: String(form.get("url") ?? "").trim(),
+        description: String(form.get("description") ?? "").trim(),
+        usageHint: String(form.get("usageHint") ?? "").trim(),
+      });
+      formEl.reset();
+      setMessage(null);
+      onChanged();
+    } catch (err) {
+      setMessage(err instanceof ApiError && err.code === "command_taken" ? "이미 있는 명령입니다." : "명령을 추가하지 못했습니다.");
+    }
+  };
+
+  return (
+    <details className="app-card">
+      <summary>
+        <strong>{app.name}</strong> <span className="muted">· 권한 {app.scopes.length}개 · 명령 {app.commands.length}개</span>
+      </summary>
+      <form onSubmit={save} className="stack">
+        <label>
+          이름
+          <input name="name" defaultValue={app.name} required maxLength={80} />
+        </label>
+        <fieldset>
+          <legend>권한 범위</legend>
+          {appScopes.map((s) => (
+            <label key={s} className="check">
+              <input type="checkbox" name={`scope:${s}`} defaultChecked={app.scopes.includes(s)} /> {SCOPE_LABEL[s]}
+            </label>
+          ))}
+        </fieldset>
+        <label>
+          이벤트 URL
+          <input name="eventsUrl" type="url" defaultValue={app.eventsUrl ?? ""} placeholder="https://example.com/chatter/events" />
+        </label>
+        <fieldset>
+          <legend>받을 이벤트</legend>
+          {appEventTypes.map((t) => (
+            <label key={t} className="check">
+              <input type="checkbox" name={`event:${t}`} defaultChecked={app.eventTypes.includes(t)} /> {EVENT_LABEL[t]}
+            </label>
+          ))}
+        </fieldset>
+        <label>
+          버튼 클릭 URL
+          <input name="interactivityUrl" type="url" defaultValue={app.interactivityUrl ?? ""} placeholder="https://example.com/chatter/actions" />
+        </label>
+        <label>
+          서명 비밀값 (앱이 요청을 검증할 때 사용)
+          <CopyField value={app.signingSecret} label={`${app.name} 서명 비밀값`} />
+        </label>
+        <div className="row wrap">
+          <button type="submit">저장</button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => {
+              if (confirm("새 토큰을 발급할까요? 지금 토큰은 바로 쓸 수 없게 됩니다.")) void api.reissueAppToken(workspace.id, app.id).then(onIssued);
+            }}
+          >
+            토큰 재발급
+          </button>
+          <button
+            type="button"
+            className="link danger"
+            onClick={() => {
+              if (confirm(`${app.name} 앱을 삭제할까요? 토큰·명령·이벤트가 모두 멈춥니다.`)) void api.deleteApp(workspace.id, app.id).then(onChanged);
+            }}
+          >
+            앱 삭제
+          </button>
+        </div>
+        {message && <p className="muted">{message}</p>}
+      </form>
+
+      <h3>슬래시 커맨드</h3>
+      <table className="admin-table">
+        <tbody>
+          {app.commands.map((c) => (
+            <tr key={c.id}>
+              <td>
+                <strong>/{c.command}</strong> {c.usageHint && <span className="muted">{c.usageHint}</span>}
+              </td>
+              <td className="muted">{c.description}</td>
+              <td className="actions-cell">
+                <button className="link danger" onClick={() => void api.deleteCommand(workspace.id, app.id, c.id).then(onChanged)}>
+                  삭제
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <form onSubmit={addCommand} className="row wrap">
+        <input name="command" placeholder="/명령 (예: deploy)" aria-label="명령 이름" required />
+        <input name="url" type="url" placeholder="https://example.com/chatter/commands" aria-label="명령 URL" required />
+        <input name="description" placeholder="설명" aria-label="명령 설명" maxLength={100} />
+        <input name="usageHint" placeholder="사용법 (예: [환경])" aria-label="명령 사용법" maxLength={100} />
+        <button type="submit">명령 추가</button>
+      </form>
+    </details>
   );
 }

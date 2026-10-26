@@ -13,6 +13,7 @@ import { SESSION_COOKIE, findSessionUser } from "./auth";
 import type { Db } from "./db/client";
 import { FileStore } from "./files";
 import type { PushSender } from "./notify";
+import type { OutboundPolicy } from "./outbound";
 import { Oidc, type OidcConfig } from "./oidc";
 import { channelAccess, memberIds } from "./queries";
 import { coMemberIds, expireMemberships } from "./workspaces";
@@ -25,6 +26,9 @@ import { pushRoutes } from "./routes/push";
 import { savedRoutes } from "./routes/saved";
 import { inviteRoutes } from "./routes/invites";
 import { webhookRoutes } from "./routes/webhooks";
+import { appRoutes } from "./routes/apps";
+import { botApiRoutes } from "./routes/botApi";
+import { interactionRoutes } from "./routes/interactions";
 import { workspaceRoutes } from "./routes/workspaces";
 import { searchRoutes } from "./routes/search";
 import { userRoutes } from "./routes/users";
@@ -48,6 +52,8 @@ export interface AppDeps {
   maxFileBytes: number;
   /** Web Push; null when no VAPID keys are configured. */
   push: { publicKey: string; send: PushSender } | null;
+  /** How requests to app URLs are restricted. */
+  outbound: OutboundPolicy;
 }
 
 /** One typing event per user and conversation in this window is relayed; the rest are dropped. */
@@ -66,6 +72,7 @@ export async function buildApp({
   fileStorageDir,
   maxFileBytes = 25 * 1024 * 1024,
   push = null,
+  allowPrivateAppUrls = false,
   trustProxy = false,
   logger = true,
 }: {
@@ -84,6 +91,8 @@ export async function buildApp({
   fileStorageDir: string;
   maxFileBytes?: number;
   push?: AppDeps["push"];
+  /** Tests and local development only: apps may use plain HTTP and private addresses. */
+  allowPrivateAppUrls?: boolean;
   /** Trust X-Forwarded-* from a reverse proxy, so rate limits key on the real client. */
   trustProxy?: boolean;
   logger?: boolean;
@@ -101,6 +110,7 @@ export async function buildApp({
     fileStore: new FileStore(fileStorageDir),
     maxFileBytes,
     push,
+    outbound: { allowPrivate: allowPrivateAppUrls },
   };
 
   await app.register(cookie);
@@ -189,5 +199,8 @@ export async function buildApp({
   await app.register(workspaceRoutes, deps);
   await app.register(inviteRoutes, deps);
   await app.register(webhookRoutes, deps);
+  await app.register(appRoutes, deps);
+  await app.register(botApiRoutes, deps);
+  await app.register(interactionRoutes, deps);
   return app;
 }

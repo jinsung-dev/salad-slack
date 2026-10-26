@@ -182,6 +182,7 @@ export async function loadMessages(db: Db, ids: number[]): Promise<Message[]> {
         mentionsChannel: m.mentionsChannel,
         reactions: reactionsBy.get(m.id) ?? [],
         files: filesBy.get(m.id) ?? [],
+        blocks: m.blocks ?? null,
         thread:
           m.replyCount > 0 && m.lastReplyAt
             ? { replyCount: m.replyCount, lastReplyAt: m.lastReplyAt.toISOString(), participantIds: participantsBy.get(m.id) ?? [] }

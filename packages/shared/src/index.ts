@@ -14,6 +14,11 @@ export const channelNameSchema = z
       .regex(/^[\p{L}\p{N}][\p{L}\p{N}_-]{0,79}$/u, "글자(한글·영문 등), 숫자, -, _ 만 쓸 수 있고 공백은 안 됩니다 (최대 80자)"),
   );
 
+const historyQueryBase = z.object({
+  before: z.coerce.number().int().positive().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
 // Workspaces.
 
 export const workspaceRoles = ["owner", "admin", "member", "guest"] as const;
@@ -58,8 +63,98 @@ export const createWebhookInput = z.object({
   name: z.string().trim().min(1).max(80),
 });
 
+// Message blocks: structured layouts apps send. `text` stays required as the
+// fallback for notifications, search and anything that cannot show blocks.
+
+const blockText = z.string().trim().min(1).max(3000);
+const actionId = z.string().regex(/^[A-Za-z0-9_.:-]{1,64}$/);
+
+export const buttonElement = z.object({
+  type: z.literal("button"),
+  text: z.string().trim().min(1).max(75),
+  /** Sent to the app when clicked; omit with `url` for a plain link. */
+  actionId: actionId.optional(),
+  value: z.string().max(2000).optional(),
+  url: z.url({ protocol: /^https?$/ }).max(3000).optional(),
+  style: z.enum(["primary", "danger"]).optional(),
+}).refine((b) => Boolean(b.actionId) !== Boolean(b.url), { message: "button needs exactly one of actionId or url" });
+
+export const block = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("section"), text: blockText.optional(), fields: z.array(blockText).min(1).max(10).optional() }).refine(
+    (s) => s.text !== undefined || s.fields !== undefined,
+    { message: "section needs text or fields" },
+  ),
+  z.object({ type: z.literal("divider") }),
+  z.object({ type: z.literal("context"), elements: z.array(z.string().trim().min(1).max(500)).min(1).max(10) }),
+  z.object({ type: z.literal("actions"), elements: z.array(buttonElement).min(1).max(5) }),
+]);
+export type Block = z.infer<typeof block>;
+export type ButtonElement = z.infer<typeof buttonElement>;
+export const blocksSchema = z.array(block).min(1).max(50);
+
 /** What an incoming webhook accepts. */
-export const webhookMessageInput = z.object({ text: z.string().trim().min(1).max(4000) });
+export const webhookMessageInput = z.object({
+  text: z.string().trim().min(1).max(4000),
+  blocks: blocksSchema.optional(),
+});
+
+// Apps: a bot user, its token and scopes, event subscriptions, slash commands
+// and the URL that receives button clicks.
+
+export const appScopes = ["chat:write", "channels:read", "channels:history", "users:read"] as const;
+export type AppScope = (typeof appScopes)[number];
+export const appEventTypes = ["message", "app_mention"] as const;
+export type AppEventType = (typeof appEventTypes)[number];
+
+const appUrl = z.url({ protocol: /^https?$/ }).max(2000);
+
+export const appParams = workspaceParams.extend({ appId: z.uuid() });
+export const createAppInput = z.object({ name: z.string().trim().min(1).max(80) });
+export const updateAppInput = z.object({
+  name: z.string().trim().min(1).max(80),
+  scopes: z.array(z.enum(appScopes)).max(appScopes.length),
+  eventsUrl: appUrl.nullable(),
+  eventTypes: z.array(z.enum(appEventTypes)).max(appEventTypes.length),
+  interactivityUrl: appUrl.nullable(),
+});
+export type UpdateAppInput = z.infer<typeof updateAppInput>;
+
+export const commandName = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9_-]{0,31}$/, "영문 소문자, 숫자, -, _ (최대 32자)");
+export const createCommandInput = z.object({
+  command: commandName,
+  url: appUrl,
+  description: z.string().trim().max(100).default(""),
+  usageHint: z.string().trim().max(100).default(""),
+});
+
+/** Someone ran `/command text` in a conversation. */
+export const invokeCommandInput = z.object({
+  command: commandName,
+  text: z.string().max(4000).default(""),
+  parentId: z.number().int().positive().nullable().default(null),
+});
+
+/** What an app answers to a command or a click, now or through its response URL. */
+export const appReply = z.object({
+  text: z.string().trim().min(1).max(4000),
+  blocks: blocksSchema.optional(),
+  /** Command replies: only the person who ran it, or everyone in the conversation. */
+  responseType: z.enum(["ephemeral", "in_channel"]).default("ephemeral"),
+  /** Click replies: replace the message that holds the button. */
+  replaceOriginal: z.boolean().default(false),
+});
+export type AppReply = z.input<typeof appReply>;
+
+export const blockActionInput = z.object({ actionId, value: z.string().max(2000).optional() });
+
+// Bot API (Authorization: Bearer <bot token>).
+export const botPostMessageInput = z.object({
+  channelId: z.uuid(),
+  text: z.string().trim().min(1).max(4000),
+  blocks: blocksSchema.optional(),
+  parentId: z.number().int().positive().optional(),
+});
+export const botHistoryQuery = historyQueryBase.extend({ channelId: z.uuid() });
 
 export const createChannelInput = z.object({
   name: channelNameSchema,
@@ -112,10 +207,7 @@ export const reactionParams = messageParams.extend({
   emoji: z.string().min(1).max(32).regex(/^\S+$/u),
 });
 
-export const historyQuery = z.object({
-  before: z.coerce.number().int().positive().optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-});
+export const historyQuery = historyQueryBase;
 
 export const notifyLevels = ["all", "mentions", "none"] as const;
 export type NotifyLevel = (typeof notifyLevels)[number];
@@ -201,6 +293,8 @@ export interface Member {
   id: string;
   displayName: string;
   role: WorkspaceRole;
+  /** An app's bot user. */
+  isBot: boolean;
   /** When a guest's access ends; null = no end. */
   expiresAt: string | null;
 }
@@ -245,6 +339,50 @@ export interface InvitePreview {
   expiresAt: string;
   /** The viewer already belongs to the workspace. */
   alreadyMember: boolean;
+}
+
+export interface SlashCommand {
+  id: string;
+  appId: string;
+  command: string;
+  url: string;
+  description: string;
+  usageHint: string;
+}
+
+export interface App {
+  id: string;
+  name: string;
+  botUserId: string;
+  scopes: AppScope[];
+  eventsUrl: string | null;
+  eventTypes: AppEventType[];
+  interactivityUrl: string | null;
+  /** Verifies that requests to the app came from Chatter (HMAC). Admins only. */
+  signingSecret: string;
+  commands: SlashCommand[];
+  createdAt: string;
+  /** The bot token, only in the response that created or reissued it. */
+  token?: string;
+}
+
+/** A command anyone in the workspace can run, for autocomplete. */
+export interface CommandInfo {
+  command: string;
+  description: string;
+  usageHint: string;
+  appName: string;
+}
+
+/** Shown only to one person and never stored: command replies, errors. */
+export interface EphemeralMessage {
+  id: string;
+  channelId: string;
+  parentId: number | null;
+  author: { id: string; displayName: string };
+  text: string;
+  blocks: Block[] | null;
+  createdAt: string;
 }
 
 export interface Webhook {
@@ -319,6 +457,8 @@ export interface Message {
   mentionsChannel: boolean;
   reactions: Reaction[];
   files: FileRef[];
+  /** Structured layout from an app; `text` is its fallback. */
+  blocks: Block[] | null;
   /** Null when the message has no replies. */
   thread: ThreadSummary | null;
 }
@@ -352,4 +492,5 @@ export type ServerEvent =
   /** Sent to the workspace's members, including the person removed. */
   | { type: "member.removed"; workspaceId: string; userId: string }
   | { type: "presence.changed"; userId: string; status: PresenceStatus }
-  | { type: "typing"; channelId: string; parentId: number | null; userId: string };
+  | { type: "typing"; channelId: string; parentId: number | null; userId: string }
+  | { type: "ephemeral"; message: EphemeralMessage };

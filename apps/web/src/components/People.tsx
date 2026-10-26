@@ -73,6 +73,7 @@ export function UserPicker({
                 <PresenceDot userId={u.id} />
                 {u.displayName}
                 {u.role === "guest" && <span className="guest-badge">게스트</span>}
+                {u.isBot && <span className="bot-badge">앱</span>}
               </label>
             </li>
           ))}

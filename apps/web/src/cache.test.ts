@@ -18,6 +18,7 @@ const msg = (id: number, extra: Partial<Message> = {}): Message => ({
   mentionsChannel: false,
   reactions: [],
   files: [],
+  blocks: null,
   thread: null,
   ...extra,
 });

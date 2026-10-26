@@ -78,6 +78,7 @@ export async function workspaceRoutes(app: FastifyInstance, { db, hub }: AppDeps
     if (!myRole) return;
     const target = await memberView(db, workspaceId, userId);
     if (!target) return reply.code(404).send({ error: "member_not_found" });
+    if (target.isBot) return reply.code(400).send({ error: "managed_by_app" });
     if (target.role === "owner" || userId === req.user!.id) return reply.code(403).send({ error: "forbidden" });
     if ((role === "admin" || target.role === "admin") && myRole !== "owner") return reply.code(403).send({ error: "forbidden" });
 
@@ -102,6 +103,8 @@ export async function workspaceRoutes(app: FastifyInstance, { db, hub }: AppDeps
     if (!myRole) return;
     const target = await memberView(db, workspaceId, userId);
     if (!target) return reply.code(404).send({ error: "member_not_found" });
+    // An app's bot leaves when the app is deleted.
+    if (target.isBot) return reply.code(400).send({ error: "managed_by_app" });
     const allowed = target.role !== "owner" && (userId === me || (atLeast(myRole, "admin") && (target.role !== "admin" || myRole === "owner")));
     if (!allowed) return reply.code(403).send({ error: "forbidden" });
 

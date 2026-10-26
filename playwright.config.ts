@@ -30,6 +30,8 @@ export default defineConfig({
       OIDC_ISSUER: "",
       PUBLIC_URL: "",
       AUTH_RATE_LIMIT_PER_MINUTE: "1000",
+      // The test's stand-in app server listens on 127.0.0.1 over plain HTTP.
+      ALLOW_PRIVATE_APP_URLS: "true",
     },
   },
 });

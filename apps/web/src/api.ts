@@ -1,5 +1,7 @@
 import type {
+  App,
   Channel,
+  CommandInfo,
   CreateChannelInput,
   FileRef,
   GrantableRole,
@@ -15,6 +17,7 @@ import type {
   PresenceMap,
   Reaction,
   SearchQuery,
+  UpdateAppInput,
   User,
   Webhook,
   Workspace,
@@ -79,6 +82,19 @@ export const api = {
   webhooks: (wid: string) => request<Webhook[]>("GET", ws(wid, "/webhooks")),
   createWebhook: (wid: string, channelId: string, name: string) => request<Webhook>("POST", ws(wid, "/webhooks"), { channelId, name }),
   revokeWebhook: (wid: string, id: string) => request<void>("DELETE", ws(wid, `/webhooks/${id}`)),
+
+  apps: (wid: string) => request<App[]>("GET", ws(wid, "/apps")),
+  createApp: (wid: string, name: string) => request<App>("POST", ws(wid, "/apps"), { name }),
+  updateApp: (wid: string, appId: string, input: UpdateAppInput) => request<App>("PUT", ws(wid, `/apps/${appId}`), input),
+  reissueAppToken: (wid: string, appId: string) => request<App>("POST", ws(wid, `/apps/${appId}/token`)),
+  deleteApp: (wid: string, appId: string) => request<void>("DELETE", ws(wid, `/apps/${appId}`)),
+  addCommand: (wid: string, appId: string, input: { command: string; url: string; description: string; usageHint: string }) =>
+    request<void>("POST", ws(wid, `/apps/${appId}/commands`), input),
+  deleteCommand: (wid: string, appId: string, commandId: string) => request<void>("DELETE", ws(wid, `/apps/${appId}/commands/${commandId}`)),
+  commands: (wid: string) => request<CommandInfo[]>("GET", ws(wid, "/commands")),
+  runCommand: (channelId: string, command: string, text: string, parentId: number | null) =>
+    request<void>("POST", `/api/channels/${channelId}/commands`, { command, text, parentId }),
+  clickAction: (messageId: number, actionId: string, value?: string) => request<void>("POST", `/api/messages/${messageId}/actions`, { actionId, value }),
 
   members: (wid: string) => request<Member[]>("GET", ws(wid, "/members")),
   presence: (wid: string) => request<PresenceMap>("GET", ws(wid, "/presence")),

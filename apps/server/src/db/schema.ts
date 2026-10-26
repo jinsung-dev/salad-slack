@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { AppEventType, AppScope, Block } from "@chatter/shared";
 import {
   bigint,
   bigserial,
@@ -6,6 +7,7 @@ import {
   check,
   index,
   integer,
+  jsonb,
   smallint,
   pgTable,
   primaryKey,
@@ -182,6 +184,8 @@ export const messages = pgTable(
     clientMsgId: text().notNull(),
     text: text().notNull(),
     mentionsChannel: boolean().notNull().default(false),
+    // Structured layout from an app (validated `blocksSchema`); `text` is its fallback.
+    blocks: jsonb().$type<Block[]>(),
     // Maintained on the parent when replies are added or deleted.
     replyCount: integer().notNull().default(0),
     lastReplyAt: timestamp({ withTimezone: true }),
@@ -306,3 +310,72 @@ export const webhooks = pgTable(
   },
   (t) => [index("webhooks_workspace_id_idx").on(t.workspaceId)],
 );
+
+/** An app installed in one workspace: its bot user, token, events and interactivity endpoints. */
+export const apps = pgTable(
+  "apps",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    workspaceId: uuid()
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    botUserId: uuid()
+      .notNull()
+      .references(() => users.id),
+    // Only the SHA-256 of the bot token is stored.
+    tokenHash: text().notNull().unique(),
+    scopes: text().array().$type<AppScope[]>().notNull().default(sql`'{}'::text[]`),
+    // Shared with the app to sign requests Chatter sends it.
+    signingSecret: text().notNull(),
+    eventsUrl: text(),
+    eventTypes: text().array().$type<AppEventType[]>().notNull().default(sql`'{}'::text[]`),
+    interactivityUrl: text(),
+    createdBy: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("apps_workspace_id_idx").on(t.workspaceId), unique("apps_bot_user_uq").on(t.botUserId)],
+);
+
+export const slashCommands = pgTable(
+  "slash_commands",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    appId: uuid()
+      .notNull()
+      .references(() => apps.id, { onDelete: "cascade" }),
+    workspaceId: uuid()
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    // Without the slash; one app owns a name within a workspace.
+    command: text().notNull(),
+    url: text().notNull(),
+    description: text().notNull().default(""),
+    usageHint: text().notNull().default(""),
+    createdAt: createdAt(),
+  },
+  (t) => [unique("slash_commands_workspace_command_uq").on(t.workspaceId, t.command)],
+);
+
+/** Response URLs handed to apps with a command or click: a few late replies into one conversation, for one person. */
+export const responseUrls = pgTable("response_urls", {
+  tokenHash: text().primaryKey(),
+  appId: uuid()
+    .notNull()
+    .references(() => apps.id, { onDelete: "cascade" }),
+  channelId: uuid()
+    .notNull()
+    .references(() => channels.id, { onDelete: "cascade" }),
+  parentId: bigint({ mode: "number" }),
+  // Who ran the command or clicked; ephemeral replies go to them.
+  userId: uuid()
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  // Set for clicks: the message a reply may replace.
+  messageId: bigint({ mode: "number" }).references(() => messages.id, { onDelete: "cascade" }),
+  usesLeft: smallint().notNull(),
+  expiresAt: timestamp({ withTimezone: true }).notNull(),
+  createdAt: createdAt(),
+});

@@ -274,3 +274,25 @@ pre.example { background: var(--code-bg); border-radius: 6px; padding: 8px; font
 .guest-badge { display: inline-block; font-size: 11px; font-weight: 600; color: #92400e; background: #fde68a; border-radius: 4px; padding: 0 5px; margin-left: 4px; vertical-align: 1px; }
 .modal .stack label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .modal select { font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); }
+
+/* Phase 4 apps */
+.bot-badge { display: inline-block; font-size: 11px; font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 4px; padding: 0 5px; margin-left: 4px; vertical-align: 1px; }
+.blocks { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
+.block-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 4px 16px; margin-top: 4px; line-height: 1.5; }
+.block-divider { border: 0; border-top: 1px solid var(--border); margin: 4px 0; width: 100%; }
+.block-context { font-size: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+.block-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.block-button { background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 12px; font-size: 13px; text-decoration: none; }
+.block-button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.block-button.danger { color: var(--danger); border-color: var(--danger); }
+.ephemeral-list { margin: 4px 0; }
+.message.ephemeral { background: color-mix(in srgb, var(--accent) 5%, transparent); border-left: 3px solid var(--accent); }
+.only-you { font-size: 12px; }
+.command-hints { list-style: none; margin: 0; padding: 6px 8px 0; display: flex; flex-direction: column; gap: 2px; }
+.command-hints button { text-decoration: none; text-align: left; opacity: 1; }
+.app-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.app-card summary { cursor: pointer; }
+.app-card h3 { font-size: 14px; margin: 14px 0 4px; }
+.app-card fieldset { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; display: flex; flex-direction: column; gap: 4px; }
+.app-card legend { font-size: 13px; padding: 0 4px; }
+.check { flex-direction: row !important; align-items: center; gap: 6px !important; }
