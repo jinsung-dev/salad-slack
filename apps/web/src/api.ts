@@ -63,6 +63,10 @@ const ws = (workspaceId: string, rest = "") => `/api/workspaces/${workspaceId}${
 export const api = {
   me: () => request<User>("GET", "/api/auth/me"),
   logout: () => request<void>("POST", "/api/auth/logout"),
+  /** Mails a sign-in code to an outside guest; `inviteToken` for the first sign-in through a guest invite. */
+  startEmailSignIn: (email: string, inviteToken?: string) => request<void>("POST", "/api/auth/email/start", { email, inviteToken }),
+  verifyEmailSignIn: (email: string, code: string, displayName?: string) =>
+    request<void>("POST", "/api/auth/email/verify", { email, code, displayName }),
 
   workspaces: () => request<Workspace[]>("GET", "/api/workspaces"),
   createWorkspace: (name: string, joinDomain: string | null) => request<Workspace>("POST", "/api/workspaces", { name, joinDomain }),

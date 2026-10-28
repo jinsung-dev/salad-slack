@@ -12,6 +12,7 @@ import type { User } from "@chatter/shared";
 import { SESSION_COOKIE, findSessionUser } from "./auth";
 import type { Db } from "./db/client";
 import { FileStore } from "./files";
+import type { Mailer } from "./mail";
 import type { PushSender } from "./notify";
 import type { OutboundPolicy } from "./outbound";
 import { Oidc, type OidcConfig } from "./oidc";
@@ -19,6 +20,7 @@ import { channelAccess, memberIds } from "./queries";
 import { coMemberIds, expireMemberships } from "./workspaces";
 import { RealtimeHub } from "./realtime";
 import { authRoutes } from "./routes/auth";
+import { emailAuthRoutes } from "./routes/emailAuth";
 import { channelRoutes } from "./routes/channels";
 import { fileRoutes } from "./routes/files";
 import { messageRoutes } from "./routes/messages";
@@ -48,6 +50,10 @@ export interface AppDeps {
   cookieSecure: boolean;
   /** Sign-in attempts per client IP per minute. */
   authRateLimit: number;
+  /** Company domains: they sign in through the provider, never with an emailed code. */
+  allowedEmailDomains: string[];
+  /** Sends guests their sign-in codes; null disables email sign-in. */
+  mailer: Mailer | null;
   fileStore: FileStore;
   maxFileBytes: number;
   /** Web Push; null when no VAPID keys are configured. */
@@ -72,6 +78,7 @@ export async function buildApp({
   fileStorageDir,
   maxFileBytes = 25 * 1024 * 1024,
   push = null,
+  mailer = null,
   allowPrivateAppUrls = false,
   trustProxy = false,
   logger = true,
@@ -91,6 +98,7 @@ export async function buildApp({
   fileStorageDir: string;
   maxFileBytes?: number;
   push?: AppDeps["push"];
+  mailer?: Mailer | null;
   /** Tests and local development only: apps may use plain HTTP and private addresses. */
   allowPrivateAppUrls?: boolean;
   /** Trust X-Forwarded-* from a reverse proxy, so rate limits key on the real client. */
@@ -107,6 +115,8 @@ export async function buildApp({
     publicUrl,
     cookieSecure,
     authRateLimit,
+    allowedEmailDomains,
+    mailer,
     fileStore: new FileStore(fileStorageDir),
     maxFileBytes,
     push,
@@ -189,6 +199,7 @@ export async function buildApp({
   });
 
   await app.register(authRoutes, deps);
+  await app.register(emailAuthRoutes, deps);
   await app.register(channelRoutes, deps);
   await app.register(messageRoutes, deps);
   await app.register(userRoutes, deps);

@@ -49,6 +49,7 @@ input, textarea { font: inherit; color: inherit; background: var(--bg); border: 
 a.button { display: block; text-align: center; text-decoration: none; border-radius: 6px; padding: 10px 14px; background: var(--accent); color: var(--accent-fg); font-weight: 600; }
 a.button.google { background: var(--bg); color: var(--fg); border: 1px solid var(--border); }
 a.button.google:hover { background: var(--hover); }
+.email-sign-in { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
 
 /* Layout */
 .workspace { display: grid; grid-template-columns: 260px 1fr; height: 100%; }

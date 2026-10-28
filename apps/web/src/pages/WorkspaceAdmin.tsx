@@ -85,7 +85,10 @@ function Members({ me }: { me: User }) {
                 {u.expiresAt && <span className="muted"> · {dateFormat.format(new Date(u.expiresAt))}까지</span>}
               </td>
               <td>
-                {canEdit(u.role) && u.id !== me.id ? (
+                {u.guestOnly ? (
+                  // Outside guests sign in with an emailed code and stay guests.
+                  <span title="회사 밖 게스트: 이메일 코드로 로그인하며 역할을 바꿀 수 없습니다">외부 게스트</span>
+                ) : canEdit(u.role) && u.id !== me.id ? (
                   <select aria-label={`${u.displayName} 역할`} value={u.role} onChange={(e) => void changeRole(u.id, e.target.value as GrantableRole)}>
                     {mine === "owner" && <option value="admin">관리자</option>}
                     <option value="member">멤버</option>

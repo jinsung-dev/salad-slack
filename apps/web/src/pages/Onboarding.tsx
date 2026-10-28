@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router";
-import type { Workspace } from "@chatter/shared";
+import type { User, Workspace } from "@chatter/shared";
 import { ApiError, api } from "../api";
 import { keys } from "../cache";
 import { workspacePath } from "../workspace";
@@ -36,6 +36,21 @@ export function Onboarding() {
       setBusy(false);
     }
   };
+
+  if (qc.getQueryData<User | null>(keys.me)?.guestOnly) {
+    // Outside guests only enter through invites; their access may also have ended.
+    return (
+      <div className="auth">
+        <div className="auth-card onboarding">
+          <h1>참여 중인 대화가 없습니다</h1>
+          <p className="muted">게스트 계정은 초대받은 대화에만 참여할 수 있습니다. 초대한 사람에게 새 초대 링크를 요청해 주세요.</p>
+          <button className="link" onClick={() => void api.logout().then(() => window.location.assign("/login"))}>
+            로그아웃
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="auth">

@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { and, eq, isNull } from "drizzle-orm";
-import { SESSION_COOKIE, SESSION_TTL_MS, createSession, deleteSession } from "../auth";
+import { SESSION_COOKIE, deleteSession, startSession } from "../auth";
 import type { AppDeps } from "../app";
 import { users } from "../db/schema";
 import type { PendingLogin, VerifiedIdentity } from "../oidc";
@@ -51,14 +51,7 @@ export async function authRoutes(app: FastifyInstance, { db, oidc, publicUrl, co
 
     const userId = await findOrCreateUser(identity);
     if (!userId) return failed(reply, "account_conflict");
-    const token = await createSession(db, userId);
-    reply.setCookie(SESSION_COOKIE, token, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: cookieSecure,
-      path: "/",
-      maxAge: SESSION_TTL_MS / 1000,
-    });
+    await startSession(db, reply, userId, cookieSecure);
     return reply.redirect(safeReturnPath(pending.returnTo));
   });
 

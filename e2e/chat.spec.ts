@@ -1,4 +1,7 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { expect, test, type Browser, type Page } from "@playwright/test";
+import { E2E_MAIL_DIR } from "../playwright.config";
 
 // Real browser sessions against the running dev stack (pnpm db:up && pnpm dev).
 
@@ -58,6 +61,20 @@ async function send(page: Page, placeholder: string, text: string) {
 }
 
 const message = (page: Page, text: string) => page.locator(".main .message").filter({ hasText: text });
+
+/** The newest sign-in code the server's development mailer wrote for `to`. */
+function mailedCode(to: string): string | undefined {
+  let files: string[];
+  try {
+    files = readdirSync(E2E_MAIL_DIR).sort();
+  } catch {
+    return undefined;
+  }
+  const mail = files
+    .map((f) => JSON.parse(readFileSync(join(E2E_MAIL_DIR, f), "utf8")) as { to: string; text: string })
+    .findLast((m) => m.to === to);
+  return mail?.text.match(/\b(\d{6})\b/)?.[1];
+}
 
 test("two users chat in realtime with unread state", async ({ browser }) => {
   const channel = `e2e-${run}`;
@@ -299,13 +316,25 @@ test("an outside guest invited to one channel lands in it and sees nothing else"
   await createChannel(owner, `partner-${run}`, true);
   await send(owner, `#partner-${run}에 메시지 보내기`, `킥오프 자료 ${run}`);
 
+  const email = `partner-${run}@partner.test`;
   await owner.getByRole("button", { name: "외부인 초대" }).click();
   await owner.getByLabel("게스트 기간").selectOption({ label: "30일" });
+  await owner.getByLabel("초대할 사람의 이메일").fill(email);
   await owner.getByRole("button", { name: "초대 링크 만들기" }).click();
   const link = await owner.getByLabel("채널 초대 링크").inputValue();
   await owner.getByRole("button", { name: "닫기" }).click();
 
-  const partner = await newPerson(browser, `partner${run}`, new URL(link).pathname);
+  // The partner has no company account: they sign in with a code mailed to the invited address.
+  const partner = await (await browser.newContext()).newPage();
+  await partner.goto(new URL(link).pathname);
+  await partner.getByRole("button", { name: /이메일 코드로 로그인/ }).click();
+  await partner.getByPlaceholder("초대받은 이메일 주소").fill(email);
+  await partner.getByRole("button", { name: "코드 받기" }).click();
+  let code: string | undefined;
+  await expect.poll(() => (code = mailedCode(email))).toBeTruthy();
+  await partner.getByPlaceholder("6자리 코드").fill(code!);
+  await partner.getByPlaceholder(/^표시할 이름/).fill(`partner${run}`);
+  await partner.getByRole("button", { name: "로그인", exact: true }).click();
   await expect(partner.getByText(`#partner-${run}`)).toBeVisible();
   await expect(partner.getByText("30일 뒤 자동으로 나가게 됩니다")).toBeVisible();
   await partner.getByRole("button", { name: "참여하기" }).click();
@@ -313,6 +342,7 @@ test("an outside guest invited to one channel lands in it and sees nothing else"
   await expect(message(partner, `킥오프 자료 ${run}`)).toBeVisible();
   await expect(partner.getByRole("link", { name: `# internal-${run}` })).toHaveCount(0);
   await expect(partner.getByRole("button", { name: "외부인 초대" })).toHaveCount(0);
+  await expect(partner.getByRole("button", { name: "+ 채널 만들기" })).toHaveCount(0);
 
   await send(partner, `#partner-${run}에 메시지 보내기`, "확인했습니다");
   const fromGuest = message(owner, "확인했습니다");

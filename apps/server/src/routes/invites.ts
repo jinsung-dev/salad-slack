@@ -1,15 +1,15 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { createInviteInput, workspaceParams, type Invite, type InvitePreview } from "@chatter/shared";
 import { z } from "zod";
 import type { AppDeps } from "../app";
-import { channels, invites, users, workspaces } from "../db/schema";
+import { channels, invites } from "../db/schema";
+import { findLiveInvite, hashInviteToken } from "../invites";
 import { addChannelMembers, channelAccess, channelSummary } from "../queries";
 import { addWorkspaceMember, requireRole, workspaceRole } from "../workspaces";
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 const inviteParams = workspaceParams.extend({ inviteId: z.uuid() });
 const tokenParams = z.object({ token: z.string().min(16).max(128) });
 
@@ -54,7 +54,7 @@ export async function inviteRoutes(app: FastifyInstance, { db, hub, publicUrl }:
       .insert(invites)
       .values({
         workspaceId,
-        tokenHash: hashToken(token),
+        tokenHash: hashInviteToken(token),
         role,
         email,
         channelId,
@@ -83,21 +83,9 @@ export async function inviteRoutes(app: FastifyInstance, { db, hub, publicUrl }:
     return reply.code(204).send();
   });
 
-  /** A live invite for this token, or null: unknown, expired, revoked and used look the same. */
-  const liveInvite = async (token: string) => {
-    const [row] = await db
-      .select({ invite: invites, workspaceName: workspaces.name, inviter: users.displayName, channelName: channels.name })
-      .from(invites)
-      .innerJoin(workspaces, eq(workspaces.id, invites.workspaceId))
-      .innerJoin(users, eq(users.id, invites.createdBy))
-      .leftJoin(channels, eq(channels.id, invites.channelId))
-      .where(and(eq(invites.tokenHash, hashToken(token)), isNull(invites.revokedAt), isNull(invites.usedAt), gt(invites.expiresAt, new Date())));
-    return row ?? null;
-  };
-
   app.get("/api/invites/:token", async (req, reply): Promise<InvitePreview | undefined> => {
     const { token } = tokenParams.parse(req.params);
-    const found = await liveInvite(token);
+    const found = await findLiveInvite(db, token);
     if (!found) return reply.code(404).send({ error: "invite_invalid" });
     return {
       workspace: { id: found.invite.workspaceId, name: found.workspaceName },
@@ -114,10 +102,11 @@ export async function inviteRoutes(app: FastifyInstance, { db, hub, publicUrl }:
   // An email-bound invite works once, for that address only; others are reusable until they expire.
   app.post("/api/invites/:token/accept", async (req, reply) => {
     const { token } = tokenParams.parse(req.params);
-    const found = await liveInvite(token);
+    const found = await findLiveInvite(db, token);
     if (!found) return reply.code(404).send({ error: "invite_invalid" });
     const { invite } = found;
     if (invite.email && invite.email !== req.user!.email.toLowerCase()) return reply.code(403).send({ error: "invite_for_other_email" });
+    if (req.user!.guestOnly && invite.role !== "guest") return reply.code(403).send({ error: "guest_account_only" });
     if (invite.email) {
       // Claim it atomically so two accepts cannot both use a single-use link.
       const [claimed] = await db

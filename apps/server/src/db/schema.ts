@@ -33,6 +33,8 @@ export const users = pgTable(
     // The identity provider account (Google: issuer + `sub`); stable when the email changes.
     oidcIssuer: text(),
     oidcSubject: text(),
+    // Outside guests who sign in with an emailed code instead of the provider; they only ever hold guest memberships.
+    guestOnly: boolean().notNull().default(false),
     // Notification preferences. Quiet hours are minutes after local midnight in `timeZone`.
     timeZone: text().notNull().default("Asia/Seoul"),
     quietHoursEnabled: boolean().notNull().default(false),
@@ -117,6 +119,22 @@ export const sessions = pgTable(
     createdAt: createdAt(),
   },
   (t) => [index("sessions_user_id_idx").on(t.userId)],
+);
+
+/** One-time sign-in codes mailed to outside guests. A new code replaces the address's earlier ones. */
+export const emailCodes = pgTable(
+  "email_codes",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    email: text().notNull(),
+    // SHA-256 of the row id and the code; the code itself is only in the mail.
+    codeHash: text().notNull(),
+    attempts: smallint().notNull().default(0),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    usedAt: timestamp({ withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("email_codes_email_idx").on(t.email, t.createdAt)],
 );
 
 export const channels = pgTable(

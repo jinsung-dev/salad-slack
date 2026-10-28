@@ -58,6 +58,24 @@ export const createInviteInput = z
   })
   .refine((i) => i.guestDays === null || i.role === "guest", { message: "기간은 게스트 초대에만 정할 수 있습니다", path: ["guestDays"] });
 
+// Outside guests sign in with a code mailed to them: first through an email-bound
+// guest invite, later with the same address alone.
+
+const emailAddress = z.email().transform((e) => e.toLowerCase());
+
+export const emailCodeStartInput = z.object({
+  email: emailAddress,
+  /** The guest invite being accepted; without it only an existing guest account gets a code. */
+  inviteToken: z.string().min(16).max(128).optional(),
+});
+
+export const emailCodeVerifyInput = z.object({
+  email: emailAddress,
+  code: z.string().regex(/^\d{6}$/),
+  /** The name a new guest account starts with. */
+  displayName: z.string().trim().min(1).max(80).optional(),
+});
+
 export const createWebhookInput = z.object({
   channelId: z.uuid(),
   name: z.string().trim().min(1).max(80),
@@ -287,6 +305,8 @@ export interface User {
   id: string;
   email: string;
   displayName: string;
+  /** Signed in with an emailed code: an outside guest who cannot create or join workspaces on their own. */
+  guestOnly: boolean;
 }
 
 export interface Member {
@@ -295,6 +315,8 @@ export interface Member {
   role: WorkspaceRole;
   /** An app's bot user. */
   isBot: boolean;
+  /** An outside guest who signs in with an emailed code; stays a guest. */
+  guestOnly: boolean;
   /** When a guest's access ends; null = no end. */
   expiresAt: string | null;
 }

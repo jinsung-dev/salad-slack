@@ -20,7 +20,7 @@ const REDIS_URL = process.env.TEST_REDIS_URL ?? "redis://localhost:56379";
  */
 export function useCluster(
   nodes = 1,
-  options: Partial<Pick<Parameters<typeof buildApp>[0], "allowedEmailDomains" | "authRateLimit" | "webDist" | "maxFileBytes" | "push" | "allowPrivateAppUrls">> = {},
+  options: Partial<Pick<Parameters<typeof buildApp>[0], "allowedEmailDomains" | "authRateLimit" | "webDist" | "maxFileBytes" | "push" | "mailer" | "allowPrivateAppUrls">> = {},
 ) {
   const { db, pool } = createDb(DATABASE_URL);
   const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
@@ -110,7 +110,11 @@ export type Client = Awaited<ReturnType<typeof signIn>>;
 export async function signIn(baseUrl: string, name: string, email = `${name}-${randomUUID()}@example.test`) {
   const result = await oidcSignIn(baseUrl, { email, name });
   expect(result.location).toBe("/");
-  const cookie = result.session!;
+  return sessionClient(baseUrl, result.session!, email);
+}
+
+/** A client for a session cookie however it was issued. */
+export async function sessionClient(baseUrl: string, cookie: string, email: string) {
   const call = async <T = any>(method: string, path: string, body?: unknown, url = baseUrl) => {
     const r = await fetch(`${url}${path}`, {
       method,

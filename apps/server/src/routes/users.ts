@@ -3,7 +3,7 @@ import { asc, eq } from "drizzle-orm";
 import { preferencesInput, workspaceParams, type Member, type PresenceMap, type Preferences } from "@chatter/shared";
 import type { AppDeps } from "../app";
 import { users, workspaceMembers } from "../db/schema";
-import { requireRole, toMember, workspaceMemberIds } from "../workspaces";
+import { memberColumns, requireRole, toMember, workspaceMemberIds } from "../workspaces";
 
 export async function userRoutes(app: FastifyInstance, { db, hub }: AppDeps) {
   app.addHook("preHandler", async (req, reply) => {
@@ -15,7 +15,7 @@ export async function userRoutes(app: FastifyInstance, { db, hub }: AppDeps) {
     const { workspaceId } = workspaceParams.parse(req.params);
     if (!(await requireRole(db, reply, workspaceId, req.user!.id, "guest"))) return;
     const rows = await db
-      .select({ id: users.id, displayName: users.displayName, kind: users.kind, role: workspaceMembers.role, expiresAt: workspaceMembers.expiresAt })
+      .select(memberColumns)
       .from(workspaceMembers)
       .innerJoin(users, eq(users.id, workspaceMembers.userId))
       .where(eq(workspaceMembers.workspaceId, workspaceId))

@@ -1,6 +1,7 @@
 import { buildApp } from "./app";
 import { createDb, runMigrations } from "./db/client";
 import { env } from "./env";
+import { smtpMailer, type Mailer } from "./mail";
 import type { OidcConfig } from "./oidc";
 import { webPushSender } from "./webPush";
 
@@ -23,7 +24,16 @@ async function signInProvider(): Promise<{ config: OidcConfig; close?: () => Pro
   return { config: { issuer: fake.issuer, clientId, clientSecret }, close: fake.close };
 }
 
+/** SMTP when configured; with the development fake provider, mail lands in files; otherwise none. */
+async function guestMailer(fakeProvider: boolean): Promise<Mailer | null> {
+  if (env.smtp) return smtpMailer(env.smtp);
+  if (!fakeProvider) return null;
+  const { devMailer } = await import("../devtools/dev-mailer");
+  return devMailer(env.devMailDir);
+}
+
 const provider = await signInProvider();
+const mailer = await guestMailer(Boolean(provider.close));
 const { db, pool } = createDb(env.databaseUrl);
 await runMigrations(db);
 const app = await buildApp({
@@ -39,6 +49,7 @@ const app = await buildApp({
   fileStorageDir: env.fileStorageDir,
   maxFileBytes: env.maxFileBytes,
   allowPrivateAppUrls: env.allowPrivateAppUrls,
+  mailer,
   push: env.vapid ? { publicKey: env.vapid.publicKey, send: webPushSender(env.vapid) } : null,
   trustProxy: env.trustProxy,
 });
@@ -57,3 +68,4 @@ if (provider.close) app.log.warn(`development sign-in: fake provider at ${provid
 else app.log.info(`sign-in via ${provider.config.issuer}`);
 app.log.info(env.vapid ? "web push enabled" : "web push disabled: set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY");
 if (env.allowedEmailDomains.length > 0) app.log.info(`sign-in limited to ${env.allowedEmailDomains.join(", ")}`);
+app.log.info(env.smtp ? `guest email sign-in via ${env.smtp.host}` : mailer ? `guest email sign-in: mail written to ${env.devMailDir}` : "guest email sign-in disabled: set SMTP_USER and SMTP_PASSWORD");
