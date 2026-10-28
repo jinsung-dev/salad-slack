@@ -21,6 +21,7 @@
     "drizzle-orm": "0.45.4",
     "fastify": "5.12.7",
     "ioredis": "6.0.0",
+    "nodemailer": "10.0.16",
     "openid-client": "6.8.8",
     "pg": "8.23.1",
     "web-push": "3.6.7",

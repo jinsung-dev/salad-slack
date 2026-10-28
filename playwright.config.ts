@@ -1,8 +1,11 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "@playwright/test";
 
 // E2E runs its own production build against a throwaway database, wiped at
 // start, so test users and channels never appear where people work.
 const PORT = 3101;
+// Sign-in codes for outside guests land here as files (the server's development mailer).
+export const E2E_MAIL_DIR = fileURLToPath(new URL("e2e/artifacts/mail", import.meta.url));
 
 export default defineConfig({
   testDir: "e2e",
@@ -32,6 +35,10 @@ export default defineConfig({
       AUTH_RATE_LIMIT_PER_MINUTE: "1000",
       // The test's stand-in app server listens on 127.0.0.1 over plain HTTP.
       ALLOW_PRIVATE_APP_URLS: "true",
+      // No SMTP: the development mailer writes guests' codes to files.
+      SMTP_USER: "",
+      SMTP_PASSWORD: "",
+      DEV_MAIL_DIR: E2E_MAIL_DIR,
     },
   },
 });

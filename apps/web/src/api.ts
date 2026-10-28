@@ -63,6 +63,10 @@ const ws = (workspaceId: string, rest = "") => `/api/workspaces/${workspaceId}${
 export const api = {
   me: () => request<User>("GET", "/api/auth/me"),
   logout: () => request<void>("POST", "/api/auth/logout"),
+  /** Mails a sign-in code to an outside guest; `inviteToken` for the first sign-in through a guest invite. */
+  startEmailSignIn: (email: string, inviteToken?: string) => request<void>("POST", "/api/auth/email/start", { email, inviteToken }),
+  verifyEmailSignIn: (email: string, code: string, displayName?: string) =>
+    request<void>("POST", "/api/auth/email/verify", { email, code, displayName }),
 
   workspaces: () => request<Workspace[]>("GET", "/api/workspaces"),
   createWorkspace: (name: string, joinDomain: string | null) => request<Workspace>("POST", "/api/workspaces", { name, joinDomain }),
@@ -87,8 +91,10 @@ export const api = {
   createApp: (wid: string, name: string) => request<App>("POST", ws(wid, "/apps"), { name }),
   updateApp: (wid: string, appId: string, input: UpdateAppInput) => request<App>("PUT", ws(wid, `/apps/${appId}`), input),
   reissueAppToken: (wid: string, appId: string) => request<App>("POST", ws(wid, `/apps/${appId}/token`)),
+  /** The app-level token for Socket Mode. */
+  issueSocketToken: (wid: string, appId: string) => request<App>("POST", ws(wid, `/apps/${appId}/app-token`)),
   deleteApp: (wid: string, appId: string) => request<void>("DELETE", ws(wid, `/apps/${appId}`)),
-  addCommand: (wid: string, appId: string, input: { command: string; url: string; description: string; usageHint: string }) =>
+  addCommand: (wid: string, appId: string, input: { command: string; url: string | null; description: string; usageHint: string }) =>
     request<void>("POST", ws(wid, `/apps/${appId}/commands`), input),
   deleteCommand: (wid: string, appId: string, commandId: string) => request<void>("DELETE", ws(wid, `/apps/${appId}/commands/${commandId}`)),
   commands: (wid: string) => request<CommandInfo[]>("GET", ws(wid, "/commands")),

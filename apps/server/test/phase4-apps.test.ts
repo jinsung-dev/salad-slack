@@ -81,7 +81,7 @@ async function setup() {
 describe("apps and bot users", () => {
   it("creates an app with a bot member, shows its token once, and keeps it for admins", async () => {
     const { owner, w, app } = await setup();
-    expect(app.token).toMatch(/^xcb-/);
+    expect(app.token).toMatch(/^xoxb-/);
     expect(app.signingSecret).toHaveLength(48);
     const members = (await owner.call<Member[]>("GET", ws(w.id, "/members"))).body;
     expect(members.find((m) => m.id === app.botUserId)).toMatchObject({ displayName: "Deploy Bot", isBot: true, role: "member" });
@@ -98,7 +98,7 @@ describe("apps and bot users", () => {
   it("serves the bot API within scopes and the conversations the bot is in", async () => {
     const { channel, app, token, configure, addBotTo, owner, w } = await setup();
     const call = bot(token);
-    expect((await bot("xcb-wrong")("GET", "auth.test")).status).toBe(401);
+    expect((await bot("xoxb-wrong")("GET", "auth.test")).status).toBe(401);
     expect((await call("GET", "auth.test")).body).toMatchObject({ appId: app.id, botUserId: app.botUserId, workspaceId: w.id, scopes: [] });
     expect((await call("POST", "chat.postMessage", { channelId: channel.id, text: "hi" })).body).toEqual({ error: "missing_scope", needed: "chat:write" });
 

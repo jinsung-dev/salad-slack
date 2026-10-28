@@ -39,6 +39,19 @@ export const env = {
           privateKey: process.env.VAPID_PRIVATE_KEY,
         }
       : null,
+  // Outgoing mail for guests' sign-in codes, e.g. a Google Workspace account with an app password.
+  // Unset: email sign-in is off (with the fake provider, mail is written to DEV_MAIL_DIR instead).
+  smtp:
+    process.env.SMTP_USER && process.env.SMTP_PASSWORD
+      ? {
+          host: process.env.SMTP_HOST || "smtp.gmail.com",
+          port: Number(process.env.SMTP_PORT || 465),
+          user: process.env.SMTP_USER,
+          password: process.env.SMTP_PASSWORD,
+          from: process.env.MAIL_FROM || `Chatter <${process.env.SMTP_USER}>`,
+        }
+      : null,
+  devMailDir: process.env.DEV_MAIL_DIR || fileURLToPath(new URL("../../../data/dev-mail", import.meta.url)),
   // Development only: let apps use http:// and private addresses (never on a shared server).
   allowPrivateAppUrls: process.env.ALLOW_PRIVATE_APP_URLS === "true",
   // The built web app, served from the same origin when present.

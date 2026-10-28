@@ -97,6 +97,13 @@ and `/events` (replies to mentions through the bot API). It listens on
 127.0.0.1:4000; expose it over HTTPS (for example its own ngrok tunnel) and use
 those URLs on the app.
 
+## Slack apps
+
+Apps built on Slack's SDKs (Bolt, `slack_sdk`, Hermes) can use Chatter's
+Slack-compatible API at `/api/slack/` and **Socket Mode** instead of the URLs
+above: the app connects to Chatter, so no public address is needed, and
+commands of Socket Mode apps need no URL. See [slack-compat.md](slack-compat.md).
+
 ## Local development
 
 `ALLOW_PRIVATE_APP_URLS=true` lets apps use `http://` and local addresses.

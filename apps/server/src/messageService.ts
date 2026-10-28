@@ -1,16 +1,16 @@
 import type { FastifyBaseLogger } from "fastify";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { parseMentions, type Block, type Message, type postMessageInput } from "@chatter/shared";
+import { and, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { parseMentions, type Block, type Message, type postMessageInput, type Reaction } from "@chatter/shared";
 import type { z } from "zod";
 import type { AppDeps } from "./app";
-import { channelMembers, files, mentions, messages } from "./db/schema";
+import { channelMembers, files, mentions, messages, reactions } from "./db/schema";
 import { dispatchMessageEvents } from "./events";
 import { notifyNewMessage } from "./notify";
 import { loadMessage, memberIds } from "./queries";
 
-// Single path for creating a message, used by people (REST) and webhooks:
-// mentions, attachments, thread bookkeeping, realtime delivery and push.
-// Callers check that the author may post in the channel first.
+// Single path for creating, editing, deleting and reacting to messages, used by
+// people (REST), webhooks and apps: mentions, attachments, thread bookkeeping,
+// realtime delivery and push. Callers check that the actor may do it first.
 
 /** People send text and files; apps may add blocks. */
 export type SendInput = z.output<typeof postMessageInput> & { blocks?: Block[] };
@@ -33,15 +33,16 @@ export function mentionTargets(text: string, members: string[], author: string) 
 /** Thrown inside the send transaction to roll it back when an attachment is not the sender's to attach. */
 class InvalidFiles extends Error {}
 
-type MessageRow = typeof messages.$inferSelect;
+export type MessageRow = typeof messages.$inferSelect;
 
 export async function sendMessage(
-  { db, hub, push, outbound }: Pick<AppDeps, "db" | "hub" | "push" | "outbound">,
+  deps: Pick<AppDeps, "db" | "hub" | "push" | "outbound" | "socketMode">,
   channelId: string,
   authorId: string,
   input: SendInput,
   log: FastifyBaseLogger,
 ): Promise<SendResult> {
+  const { db, hub, push } = deps;
   if (input.alsoSendToChannel && input.parentId === undefined) return { kind: "rejected", error: "invalid_input" };
   const members = await memberIds(db, channelId);
   const mention = mentionTargets(input.text, members, authorId);
@@ -119,6 +120,100 @@ export async function sendMessage(
   }
   // Off the response path: a slow push service never delays the sender.
   if (push) void notifyNewMessage(db, hub, push.send, message).catch((err) => log.error({ err }, "push notification failed"));
-  void dispatchMessageEvents(db, outbound, message, log).catch((err) => log.error({ err }, "app events failed"));
+  void dispatchMessageEvents(deps, message, log).catch((err) => log.error({ err }, "app events failed"));
   return { kind: "created", message };
+}
+
+/**
+ * Replaces a message's text (and, for apps, its blocks: undefined keeps them),
+ * keeping read state for people still mentioned. Replies that replace a
+ * clicked message are not marked edited.
+ */
+export async function editMessage(
+  { db, hub }: Pick<AppDeps, "db" | "hub">,
+  row: MessageRow,
+  change: { text: string; blocks?: Block[] | null },
+  { markEdited = true }: { markEdited?: boolean } = {},
+): Promise<Message> {
+  const members = await memberIds(db, row.channelId);
+  const mention = mentionTargets(change.text, members, row.userId);
+  await db.transaction(async (tx) => {
+    await tx
+      .update(messages)
+      .set({
+        text: change.text,
+        mentionsChannel: mention.channel,
+        ...(change.blocks !== undefined ? { blocks: change.blocks } : {}),
+        ...(markEdited ? { editedAt: sql`now()` } : {}),
+      })
+      .where(eq(messages.id, row.id));
+    await tx
+      .delete(mentions)
+      .where(and(eq(mentions.messageId, row.id), mention.targets.length > 0 ? notInArray(mentions.userId, mention.targets) : undefined));
+    if (mention.targets.length > 0) {
+      await tx
+        .insert(mentions)
+        .values(mention.targets.map((userId) => ({ messageId: row.id, userId, channelId: row.channelId })))
+        .onConflictDoNothing();
+    }
+  });
+  const message = (await loadMessage(db, row.id))!;
+  hub.publish({ users: members }, { type: "message.updated", message });
+  return message;
+}
+
+/** Deletes a message; a thread parent with replies stays as a placeholder. Deleting twice is a no-op. */
+export async function deleteMessage({ db, hub, fileStore }: Pick<AppDeps, "db" | "hub" | "fileStore">, row: MessageRow): Promise<void> {
+  if (row.deletedAt) return;
+  const parentId = row.parentId;
+  let removedFiles: string[] = [];
+  const parentGone = await db.transaction(async (tx) => {
+    await tx.update(messages).set({ deletedAt: sql`now()`, text: "", mentionsChannel: false }).where(eq(messages.id, row.id));
+    await tx.delete(mentions).where(eq(mentions.messageId, row.id));
+    await tx.delete(reactions).where(eq(reactions.messageId, row.id));
+    removedFiles = (await tx.delete(files).where(eq(files.messageId, row.id)).returning({ key: files.storageKey })).map((f) => f.key);
+    if (parentId === null) return false;
+    const [parent] = await tx
+      .update(messages)
+      .set({
+        replyCount: sql`${messages.replyCount} - 1`,
+        lastReplyAt: sql`(select max(created_at) from messages where parent_id = ${parentId} and deleted_at is null)`,
+      })
+      .where(eq(messages.id, parentId))
+      .returning({ replyCount: messages.replyCount, deletedAt: messages.deletedAt });
+    return parent!.replyCount === 0 && parent!.deletedAt !== null;
+  });
+  await fileStore.remove(removedFiles);
+
+  const members = await memberIds(db, row.channelId);
+  const channelId = row.channelId;
+  const publishUpdated = async (id: number) => {
+    const message = await loadMessage(db, id);
+    if (message) hub.publish({ users: members }, { type: "message.updated", message });
+  };
+  if (parentId === null && row.replyCount > 0) {
+    // Stays as a placeholder so its thread remains reachable.
+    await publishUpdated(row.id);
+  } else {
+    hub.publish({ users: members }, { type: "message.deleted", channelId, id: row.id, parentId });
+  }
+  if (parentId !== null) {
+    if (parentGone) hub.publish({ users: members }, { type: "message.deleted", channelId, id: parentId, parentId: null });
+    else await publishUpdated(parentId);
+  }
+}
+
+/** Adds or removes one person's reaction; returns the message's reactions after the change. */
+export async function setReaction(
+  { db, hub }: Pick<AppDeps, "db" | "hub">,
+  row: MessageRow,
+  userId: string,
+  emoji: string,
+  add: boolean,
+): Promise<Reaction[]> {
+  if (add) await db.insert(reactions).values({ messageId: row.id, userId, emoji }).onConflictDoNothing();
+  else await db.delete(reactions).where(and(eq(reactions.messageId, row.id), eq(reactions.userId, userId), eq(reactions.emoji, emoji)));
+  const { reactions: list } = (await loadMessage(db, row.id))!;
+  hub.publish({ users: await memberIds(db, row.channelId) }, { type: "reaction.updated", channelId: row.channelId, messageId: row.id, reactions: list });
+  return list;
 }

@@ -6,7 +6,9 @@ import type { AppDeps } from "../app";
 import { appByBot, applyReply, botAuthor, issueResponseUrl, redeemResponseUrl, sendEphemeral } from "../apps";
 import { apps, messages, slashCommands } from "../db/schema";
 import { OutboundError, postSigned } from "../outbound";
-import { channelAccess } from "../queries";
+import { channelAccess, loadMessage } from "../queries";
+import { actionBlockId } from "../slack/format";
+import { fromSlackReply, sendSlackBlockAction, sendSlackCommand } from "../slack/deliver";
 
 const tokenParams = z.object({ token: z.string().min(16).max(128) });
 
@@ -14,11 +16,17 @@ const FAILURE_TEXT: Record<string, string> = {
   timeout: "앱이 3초 안에 응답하지 않았습니다. 잠시 뒤 답이 올 수도 있습니다.",
   blocked_address: "앱 주소가 내부 네트워크를 가리켜 호출하지 않았습니다.",
   invalid_url: "앱 주소가 올바르지 않습니다 (HTTPS 필요).",
+  not_acknowledged: "앱이 연결되어 있지 않거나 3초 안에 응답하지 않았습니다.",
 };
 
-/** Whether a message's blocks contain a button with this action id. */
-const hasAction = (blocks: Block[] | null, actionId: string) =>
-  (blocks ?? []).some((b) => b.type === "actions" && b.elements.some((e) => e.actionId === actionId));
+/** Raised when a Socket Mode app does not acknowledge in time (or has no connection). */
+class NotAcknowledged extends Error {}
+
+/** The button with this action id in a message's blocks. */
+const findButton = (blocks: Block[] | null, actionId: string) =>
+  (blocks ?? []).flatMap((b) => (b.type === "actions" ? b.elements : [])).find((e) => e.actionId === actionId);
+
+const failureReason = (err: unknown) => (err instanceof NotAcknowledged ? "not_acknowledged" : err instanceof OutboundError ? err.reason : "network");
 
 export async function interactionRoutes(app: FastifyInstance, deps: AppDeps) {
   const { db, hub, publicUrl, outbound } = deps;
@@ -46,18 +54,29 @@ export async function interactionRoutes(app: FastifyInstance, deps: AppDeps) {
       if (!found) return reply.code(404).send({ error: "unknown_command" });
 
       const target = { channelId: id, parentId: input.parentId, userId: me.id };
-      const payload = {
-        type: "slash_command",
-        command: `/${found.command.command}`,
-        text: input.text,
-        appId: found.app.id,
-        workspaceId: access.channel.workspaceId,
-        channelId: id,
-        parentId: input.parentId,
-        user: { id: me.id, displayName: me.displayName },
-        responseUrl: await issueResponseUrl(db, origin(req), found.app, target),
-      };
+      const command = `/${found.command.command}`;
+      const responseUrl = await issueResponseUrl(db, origin(req), found.app, target);
       try {
+        if (found.app.socketMode) {
+          const delivery = await sendSlackCommand(deps, found.app, { command, text: input.text, channel: access.channel, user: me, responseUrl });
+          if (!delivery.acked) throw new NotAcknowledged();
+          // An acknowledgement may carry the reply.
+          const { reply: answer } = fromSlackReply(delivery.payload);
+          if (answer) await applyReply(deps, found.app, target, answer, req.log);
+          return reply.code(204).send();
+        }
+        if (!found.command.url) throw new OutboundError("invalid_url", "the command has no URL");
+        const payload = {
+          type: "slash_command",
+          command,
+          text: input.text,
+          appId: found.app.id,
+          workspaceId: access.channel.workspaceId,
+          channelId: id,
+          parentId: input.parentId,
+          user: { id: me.id, displayName: me.displayName },
+          responseUrl,
+        };
         const res = await postSigned(found.command.url, payload, found.app.signingSecret, outbound);
         if (res.status < 200 || res.status >= 300) throw new OutboundError("network", `status ${res.status}`);
         // An empty 2xx means "received; I will answer through the response URL".
@@ -67,7 +86,7 @@ export async function interactionRoutes(app: FastifyInstance, deps: AppDeps) {
           await applyReply(deps, found.app, target, parsed.data, req.log);
         }
       } catch (err) {
-        const reason = err instanceof OutboundError ? err.reason : "network";
+        const reason = failureReason(err);
         sendEphemeral(hub, me.id, {
           channelId: id,
           parentId: input.parentId,
@@ -88,29 +107,42 @@ export async function interactionRoutes(app: FastifyInstance, deps: AppDeps) {
       if (!message || !access || message.deletedAt) return reply.code(404).send({ error: "message_not_found" });
       if (!access.isMember) return reply.code(403).send({ error: "not_a_member" });
       const owner = await appByBot(db, message.userId);
-      if (!owner || !hasAction(message.blocks, actionId)) return reply.code(400).send({ error: "unknown_action" });
-      if (!owner.interactivityUrl) return reply.code(400).send({ error: "app_not_interactive" });
+      const button = findButton(message.blocks, actionId);
+      if (!owner || !button) return reply.code(400).send({ error: "unknown_action" });
+      if (!owner.socketMode && !owner.interactivityUrl) return reply.code(400).send({ error: "app_not_interactive" });
 
       const target = { channelId: message.channelId, parentId: message.parentId, userId: me.id, messageId: message.id };
-      const payload = {
-        type: "block_actions",
-        appId: owner.id,
-        workspaceId: owner.workspaceId,
-        channelId: message.channelId,
-        user: { id: me.id, displayName: me.displayName },
-        messageId: message.id,
-        action: { actionId, value: value ?? null },
-        responseUrl: await issueResponseUrl(db, origin(req), owner, target),
-      };
+      const responseUrl = await issueResponseUrl(db, origin(req), owner, target);
       try {
-        const res = await postSigned(owner.interactivityUrl, payload, owner.signingSecret, outbound);
+        if (owner.socketMode) {
+          const delivery = await sendSlackBlockAction(deps, owner, {
+            message: (await loadMessage(db, message.id))!,
+            channel: access.channel,
+            user: me,
+            action: { actionId, value: value ?? null, text: button.text, blockId: actionBlockId(message.blocks, actionId) },
+            responseUrl,
+          });
+          if (!delivery.acked) throw new NotAcknowledged();
+          return reply.code(204).send();
+        }
+        const payload = {
+          type: "block_actions",
+          appId: owner.id,
+          workspaceId: owner.workspaceId,
+          channelId: message.channelId,
+          user: { id: me.id, displayName: me.displayName },
+          messageId: message.id,
+          action: { actionId, value: value ?? null },
+          responseUrl,
+        };
+        const res = await postSigned(owner.interactivityUrl!, payload, owner.signingSecret, outbound);
         if (res.status < 200 || res.status >= 300) throw new OutboundError("network", `status ${res.status}`);
         if (res.json !== null) {
           const parsed = appReply.safeParse(res.json);
           if (parsed.success) await applyReply(deps, owner, target, parsed.data, req.log);
         }
       } catch (err) {
-        const reason = err instanceof OutboundError ? err.reason : "network";
+        const reason = failureReason(err);
         sendEphemeral(hub, me.id, {
           channelId: message.channelId,
           parentId: message.parentId,

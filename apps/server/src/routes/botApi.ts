@@ -7,7 +7,7 @@ import { appByToken, hasScope, type AppRow } from "../apps";
 import { messages, users, workspaceMembers } from "../db/schema";
 import { sendMessage } from "../messageService";
 import { channelAccess, listChannels, loadMessages } from "../queries";
-import { toMember } from "../workspaces";
+import { memberColumns, toMember } from "../workspaces";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -97,7 +97,7 @@ export async function botApiRoutes(app: FastifyInstance, deps: AppDeps) {
   app.get("/api/bot/v1/users.list", { config: limit }, async (req, reply): Promise<Member[] | undefined> => {
     if (!(await need(req, reply, "users:read"))) return;
     const rows = await db
-      .select({ id: users.id, displayName: users.displayName, kind: users.kind, role: workspaceMembers.role, expiresAt: workspaceMembers.expiresAt })
+      .select(memberColumns)
       .from(workspaceMembers)
       .innerJoin(users, eq(users.id, workspaceMembers.userId))
       .where(eq(workspaceMembers.workspaceId, req.botApp!.workspaceId))

@@ -29,9 +29,10 @@ export async function workspaceRoutes(app: FastifyInstance, { db, hub }: AppDeps
       .orderBy(workspaces.name),
   );
 
-  // Anyone signed in can start a workspace and owns it.
+  // Anyone signed in can start a workspace and owns it, except outside guests.
   app.post("/api/workspaces", async (req, reply) => {
     const input = createWorkspaceInput.parse(req.body);
+    if (req.user!.guestOnly) return reply.code(403).send({ error: "guest_account_only" });
     const me = req.user!.id;
     const created = await db.transaction(async (tx) => {
       const [ws] = await tx.insert(workspaces).values({ name: input.name, joinDomain: input.joinDomain, createdBy: me }).returning();
@@ -44,6 +45,7 @@ export async function workspaceRoutes(app: FastifyInstance, { db, hub }: AppDeps
 
   /** Workspaces that admit the viewer's verified email domain without an invite. */
   app.get("/api/workspaces/joinable", async (req): Promise<JoinableWorkspace[]> => {
+    if (req.user!.guestOnly) return [];
     const { rows } = await db.execute<{ id: string; name: string; member_count: number }>(sql`
       select w.id, w.name, (select count(*)::int from workspace_members where workspace_id = w.id) as member_count
       from workspaces w
@@ -57,7 +59,7 @@ export async function workspaceRoutes(app: FastifyInstance, { db, hub }: AppDeps
     const { workspaceId } = workspaceParams.parse(req.params);
     const [ws] = await db.select().from(workspaces).where(eq(workspaces.id, workspaceId));
     // Missing and not-joinable look the same.
-    if (!ws || !ws.joinDomain || ws.joinDomain !== emailDomain(req.user!.email)) return reply.code(404).send({ error: "workspace_not_found" });
+    if (!ws || !ws.joinDomain || ws.joinDomain !== emailDomain(req.user!.email) || req.user!.guestOnly) return reply.code(404).send({ error: "workspace_not_found" });
     await addWorkspaceMember(db, hub, workspaceId, req.user!.id, "member");
     return reply.code(204).send();
   });
@@ -79,6 +81,7 @@ export async function workspaceRoutes(app: FastifyInstance, { db, hub }: AppDeps
     const target = await memberView(db, workspaceId, userId);
     if (!target) return reply.code(404).send({ error: "member_not_found" });
     if (target.isBot) return reply.code(400).send({ error: "managed_by_app" });
+    if (target.guestOnly && role !== "guest") return reply.code(400).send({ error: "guest_account_only" });
     if (target.role === "owner" || userId === req.user!.id) return reply.code(403).send({ error: "forbidden" });
     if ((role === "admin" || target.role === "admin") && myRole !== "owner") return reply.code(403).send({ error: "forbidden" });
 

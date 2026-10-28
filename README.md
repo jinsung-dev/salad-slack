@@ -21,7 +21,7 @@ Phase 0~2 구현과 Phase 3의 P0·P2가 끝났고, 사내 테스트 서버(ngro
 | 1 MVP | 로그인, 공개 채널, 실시간 메시지, 히스토리, 미읽음, 재연결, 기본 서식 | 완료 |
 | 2 대화 | 스레드, DM·그룹 DM, 비공개 채널, 멘션, 수정·삭제, 리액션, 접속 상태, 입력 중 표시, 서버 수평 확장, Google 로그인 | 구현 완료, 도그푸딩 게이트 진행 전 |
 | 3 생산성 | 파일 업로드, 검색, 알림 설정, 웹 푸시, 저장한 메시지 | P0·P2 완료, 데스크톱 앱(P1) 결정 대기 |
-| 4 플랫폼 | 멀티 워크스페이스, 초대, 권한, 웹훅, 봇, 슬래시 커맨드 | 예정 |
+| 4 플랫폼 | 멀티 워크스페이스, 초대, 권한, 웹훅, 앱·봇 API, 슬래시 커맨드, 외부 게스트 이메일 로그인, Slack 호환 API·Socket Mode([docs/slack-compat.md](docs/slack-compat.md)) | 구현 완료 |
 | 5 고급 | 음성·화면 공유, SSO, 보존 정책, 감사 로그, 모바일 | 후보 |
 
 ## 스택
@@ -96,6 +96,9 @@ pnpm exec playwright test -g "테스트 이름 일부"                       # E
 | `FILE_STORAGE_DIR` | `data/uploads` | 첨부 파일 저장 위치(서버 로컬 디스크) |
 | `FILE_MAX_BYTES` | `26214400` (25MB) | 파일당 최대 크기 |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | 없음 | 웹 푸시. 비우면 푸시 꺼짐. 키를 바꾸면 기존 구독이 끊김 |
+| `SMTP_USER`, `SMTP_PASSWORD` | 없음 | 외부 게스트 로그인 코드를 보낼 메일 계정(Google Workspace 계정 + 앱 비밀번호). 비우면 이메일 로그인 꺼짐 |
+| `SMTP_HOST` / `SMTP_PORT` / `MAIL_FROM` | `smtp.gmail.com` / `465` / `Chatter <SMTP_USER>` | 메일 서버와 보내는 사람 |
+| `DEV_MAIL_DIR` | `data/dev-mail` | 로컬 가짜 로그인 제공자를 쓸 때 메일 대신 파일로 남기는 위치 |
 | `WEB_DIST` | `apps/web/dist` | 서버가 같은 주소로 서비스할 웹 빌드 |
 
 ## 사용법
@@ -103,6 +106,8 @@ pnpm exec playwright test -g "테스트 이름 일부"                       # E
 ### 로그인
 
 회사 Google 계정(`saladlab.co`)으로 로그인한다. 비밀번호는 없고, 세션은 30일 유지된다.
+
+회사 밖 게스트는 Google 대신 이메일 코드로 로그인한다. 관리자가 채널의 **외부인 초대**에서 상대 이메일을 넣어 링크를 만들고, 상대는 링크를 열어 "이메일 코드로 로그인"을 누른 뒤 메일로 받은 6자리 코드를 입력한다. 다시 로그인할 때는 로그인 화면에서 같은 주소로 코드를 받는다. 이렇게 만든 계정은 항상 게스트다. 자세한 내용은 [docs/guest-email-sign-in.md](docs/guest-email-sign-in.md).
 
 ### 채널과 DM
 
