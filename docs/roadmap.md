@@ -54,12 +54,14 @@ Decisions: files on the server's local disk (one server; S3 needed for several),
 - [x] Roles: owner / admin / member / guest. Guests see only conversations they are added to and cannot create channels, DMs or invites
 - [x] Incoming webhooks: secret URL posts into a channel as its own bot; revocable
 - [x] Channel invites for outside guests: the link adds a guest to one channel; optional end date (7/30/90 days) removes them within a minute; guest badge on messages
+- [x] Email sign-in for outside guests: a code mailed to the invited address over SMTP (Brevo in use); such accounts stay guests → [guest-email-sign-in.md](guest-email-sign-in.md)
 - [x] Apps: bot user and token, scopes, bot API, signed event subscriptions (P1) → [apps.md](apps.md)
 - [x] Slash commands: 3-second reply, ephemeral or in-channel, late replies through a response URL (P1)
 - [x] Message blocks with buttons; clicks go to the app, which can reply or replace the message (P2)
+- [x] Slack-compatible API and Socket Mode: Slack SDK apps (Bolt, `slack_sdk`) run unmodified against `/api/slack/` without a public URL (decision 2026-10-27; verified with the Python SDKs Hermes pins, not with Hermes itself) → [slack-compat.md](slack-compat.md)
 
 Existing data moved into one workspace ("SaladLab") by migration 0010; the earliest account became its owner.
-Gate (PRD): an outside team onboards itself. The live server still limits sign-in to `saladlab.co` (`ALLOWED_EMAIL_DOMAINS`), which blocks that until lifted.
+Gate (PRD): an outside team onboards itself. Google sign-in stays limited to `saladlab.co`; outside guests come in through email sign-in (decision 2026-10-26). A whole outside team creating its own workspace still needs Google opened up.
 
 ## Phase 5 — Advanced
 
