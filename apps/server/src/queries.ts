@@ -4,6 +4,7 @@ import type { Db } from "./db/client";
 import { channelMembers, channels, files, messages, users, workspaceMembers } from "./db/schema";
 import { fileRef } from "./files";
 import { effectiveLevel } from "./notify";
+import type { RealtimeHub } from "./realtime";
 
 // Single owner of the Channel and Message response shapes. Routes and realtime
 // events both build them here so a REST response and the event for the same
@@ -42,6 +43,26 @@ export async function addChannelMembers(db: Db, channelId: string, workspaceId: 
     on conflict do nothing
     returning user_id`);
   return rows.map((r) => r.user_id);
+}
+
+/** The one DM of a set of workspace members (sorted ids, creator included), created and announced to them on first use. */
+export async function openDm(db: Db, hub: RealtimeHub, workspaceId: string, creatorId: string, ids: string[]): Promise<{ channel: ChannelRow; created: boolean }> {
+  const dmKey = ids.join(",");
+  const created = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(channels)
+      .values({ workspaceId, kind: "dm", dmKey, createdBy: creatorId })
+      .onConflictDoNothing({ target: [channels.workspaceId, channels.dmKey] })
+      .returning();
+    if (row) await tx.insert(channelMembers).values(ids.map((userId) => ({ channelId: row.id, userId })));
+    return row;
+  });
+  if (created) {
+    hub.publish({ users: ids }, { type: "channel.added", channel: await channelSummary(db, created), isMember: true });
+    return { channel: created, created: true };
+  }
+  const [existing] = await db.select().from(channels).where(and(eq(channels.workspaceId, workspaceId), eq(channels.dmKey, dmKey)));
+  return { channel: existing!, created: false };
 }
 
 export async function memberIds(db: Db, channelId: string): Promise<string[]> {

@@ -213,6 +213,8 @@ export const messages = pgTable(
   },
   (t) => [
     index("messages_channel_id_id_idx").on(t.channelId, t.id),
+    // Slack-compatible message timestamps carry the creation second (`slack/ids.ts`).
+    index("messages_channel_id_created_at_idx").on(t.channelId, t.createdAt),
     index("messages_parent_id_id_idx").on(t.parentId, t.id),
     // Substring search (ILIKE '%term%'); needs the pg_trgm extension (migration 0004).
     index("messages_text_trgm_idx").using("gin", sql`${t.text} gin_trgm_ops`),
@@ -349,6 +351,10 @@ export const apps = pgTable(
     eventsUrl: text(),
     eventTypes: text().array().$type<AppEventType[]>().notNull().default(sql`'{}'::text[]`),
     interactivityUrl: text(),
+    // Socket Mode: events, commands and clicks go over the app's own WebSocket (Slack protocol) instead of its URLs.
+    socketMode: boolean().notNull().default(false),
+    // Only the SHA-256 of the app-level token (opens Socket Mode connections) is stored.
+    appTokenHash: text().unique(),
     createdBy: uuid()
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
@@ -369,7 +375,8 @@ export const slashCommands = pgTable(
       .references(() => workspaces.id, { onDelete: "cascade" }),
     // Without the slash; one app owns a name within a workspace.
     command: text().notNull(),
-    url: text().notNull(),
+    // Null for Socket Mode apps, which receive commands over their connection.
+    url: text(),
     description: text().notNull().default(""),
     usageHint: text().notNull().default(""),
     createdAt: createdAt(),

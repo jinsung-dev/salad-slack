@@ -13,7 +13,7 @@ import {
 } from "@chatter/shared";
 import type { AppDeps } from "../app";
 import { channelMembers, channels, messages } from "../db/schema";
-import { addChannelMembers, channelAccess, channelFor, channelSummary, listChannels, loadMessages } from "../queries";
+import { addChannelMembers, channelAccess, channelFor, channelSummary, listChannels, loadMessages, openDm } from "../queries";
 import { requireRole, workspaceMemberIds } from "../workspaces";
 
 export async function channelRoutes(app: FastifyInstance, { db, hub }: AppDeps) {
@@ -62,24 +62,8 @@ export async function channelRoutes(app: FastifyInstance, { db, hub }: AppDeps) 
     const inWorkspace = new Set(await workspaceMemberIds(db, workspaceId));
     if (!ids.every((id) => inWorkspace.has(id))) return reply.code(400).send({ error: "unknown_user" });
 
-    const dmKey = ids.join(",");
-    const created = await db.transaction(async (tx) => {
-      const [row] = await tx
-        .insert(channels)
-        .values({ workspaceId, kind: "dm", dmKey, createdBy: me })
-        .onConflictDoNothing({ target: [channels.workspaceId, channels.dmKey] })
-        .returning();
-      if (row) await tx.insert(channelMembers).values(ids.map((userId) => ({ channelId: row.id, userId })));
-      return row;
-    });
-    if (created) {
-      hub.publish({ users: ids }, { type: "channel.added", channel: await channelSummary(db, created), isMember: true });
-    }
-    const [existing] = await db
-      .select({ id: channels.id })
-      .from(channels)
-      .where(and(eq(channels.workspaceId, workspaceId), eq(channels.dmKey, dmKey)));
-    return reply.code(created ? 201 : 200).send(await channelFor(db, me, existing!.id));
+    const { channel, created } = await openDm(db, hub, workspaceId, me, ids);
+    return reply.code(created ? 201 : 200).send(await channelFor(db, me, channel.id));
   });
 
   // One conversation the viewer can see, with its workspace: resolves links that carry only a channel id.

@@ -19,6 +19,7 @@ import { Oidc, type OidcConfig } from "./oidc";
 import { channelAccess, memberIds } from "./queries";
 import { coMemberIds, expireMemberships } from "./workspaces";
 import { RealtimeHub } from "./realtime";
+import { SocketModeHub } from "./slack/socket";
 import { authRoutes } from "./routes/auth";
 import { emailAuthRoutes } from "./routes/emailAuth";
 import { channelRoutes } from "./routes/channels";
@@ -31,6 +32,7 @@ import { webhookRoutes } from "./routes/webhooks";
 import { appRoutes } from "./routes/apps";
 import { botApiRoutes } from "./routes/botApi";
 import { interactionRoutes } from "./routes/interactions";
+import { slackApiRoutes } from "./routes/slackApi";
 import { workspaceRoutes } from "./routes/workspaces";
 import { searchRoutes } from "./routes/search";
 import { userRoutes } from "./routes/users";
@@ -60,6 +62,8 @@ export interface AppDeps {
   push: { publicKey: string; send: PushSender } | null;
   /** How requests to app URLs are restricted. */
   outbound: OutboundPolicy;
+  /** Socket Mode connections of apps (Slack protocol), across nodes. */
+  socketMode: SocketModeHub;
 }
 
 /** One typing event per user and conversation in this window is relayed; the rest are dropped. */
@@ -108,6 +112,8 @@ export async function buildApp({
   const app = Fastify({ logger, trustProxy });
   const hub = await RealtimeHub.start(redisUrl, redisPrefix, (msg, err) => app.log.error({ err }, msg));
   app.addHook("onClose", async () => hub.close());
+  const socketMode = await SocketModeHub.start(redisUrl, redisPrefix, (msg, err) => app.log.error({ err }, msg));
+  app.addHook("onClose", async () => socketMode.close());
   const deps: AppDeps = {
     db,
     hub,
@@ -121,6 +127,7 @@ export async function buildApp({
     maxFileBytes,
     push,
     outbound: { allowPrivate: allowPrivateAppUrls },
+    socketMode,
   };
 
   await app.register(cookie);
@@ -213,5 +220,6 @@ export async function buildApp({
   await app.register(appRoutes, deps);
   await app.register(botApiRoutes, deps);
   await app.register(interactionRoutes, deps);
+  await app.register(slackApiRoutes, deps);
   return app;
 }

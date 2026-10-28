@@ -134,13 +134,16 @@ export const updateAppInput = z.object({
   eventsUrl: appUrl.nullable(),
   eventTypes: z.array(z.enum(appEventTypes)).max(appEventTypes.length),
   interactivityUrl: appUrl.nullable(),
+  /** Deliver events, commands and clicks over a Socket Mode connection (Slack protocol) instead of the URLs. */
+  socketMode: z.boolean().default(false),
 });
 export type UpdateAppInput = z.infer<typeof updateAppInput>;
 
 export const commandName = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9_-]{0,31}$/, "영문 소문자, 숫자, -, _ (최대 32자)");
 export const createCommandInput = z.object({
   command: commandName,
-  url: appUrl,
+  /** Not needed by Socket Mode apps. */
+  url: appUrl.nullable().default(null),
   description: z.string().trim().max(100).default(""),
   usageHint: z.string().trim().max(100).default(""),
 });
@@ -288,6 +291,12 @@ export function parseMentions(text: string): { userIds: string[]; channel: boole
   return { userIds: [...userIds], channel: text.includes(CHANNEL_MENTION) };
 }
 
+// Slack-compatible ids (`/api/slack`): a letter for the kind of object and the
+// Chatter UUID in upper-case hex, so they convert both ways without storage.
+
+export type SlackIdKind = "U" | "C" | "D" | "G" | "T" | "A" | "B";
+export const slackId = (kind: SlackIdKind, uuid: string) => kind + uuid.replaceAll("-", "").toUpperCase();
+
 // Client → server realtime messages. Ephemeral only: nothing here is persisted,
 // so writes keep a single validated REST path.
 
@@ -367,7 +376,7 @@ export interface SlashCommand {
   id: string;
   appId: string;
   command: string;
-  url: string;
+  url: string | null;
   description: string;
   usageHint: string;
 }
@@ -382,10 +391,15 @@ export interface App {
   interactivityUrl: string | null;
   /** Verifies that requests to the app came from Chatter (HMAC). Admins only. */
   signingSecret: string;
+  socketMode: boolean;
+  /** Whether an app-level token (Socket Mode) was issued. */
+  hasAppToken: boolean;
   commands: SlashCommand[];
   createdAt: string;
   /** The bot token, only in the response that created or reissued it. */
   token?: string;
+  /** The app-level token, only in the response that issued it. */
+  appToken?: string;
 }
 
 /** A command anyone in the workspace can run, for autocomplete. */

@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyBaseLogger } from "fastify";
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, or } from "drizzle-orm";
 import type { AppEventType, Message } from "@chatter/shared";
-import type { Db } from "./db/client";
+import type { AppDeps } from "./app";
 import { apps, channelMembers, channels } from "./db/schema";
 import { OutboundError, postSigned, type OutboundPolicy } from "./outbound";
+import { deliverSlackEvents } from "./slack/deliver";
 
 // Event subscriptions: apps whose bot is in a conversation hear about new
-// messages there (`message`) or about being mentioned (`app_mention`).
+// messages there (`message`) or about being mentioned (`app_mention`), at
+// their events URL or, in Socket Mode, over their connection in Slack's shape.
 
 /** Delays before each attempt; a 2xx ends delivery, anything else retries. */
 const ATTEMPT_DELAYS_MS = [0, 1_000, 5_000];
@@ -50,15 +52,20 @@ async function deliver(url: string, secret: string, payload: EventCallback, poli
 }
 
 /** Fire and forget from the send path; deliveries retry in the background (lost if the server stops). */
-export async function dispatchMessageEvents(db: Db, policy: OutboundPolicy, message: Message, log: FastifyBaseLogger) {
-  const subscribers = await db
+export async function dispatchMessageEvents(deps: Pick<AppDeps, "db" | "outbound" | "socketMode">, message: Message, log: FastifyBaseLogger) {
+  const subscribers = await deps.db
     .select({ app: apps, workspaceId: channels.workspaceId })
     .from(apps)
     .innerJoin(channelMembers, and(eq(channelMembers.userId, apps.botUserId), eq(channelMembers.channelId, message.channelId)))
     .innerJoin(channels, eq(channels.id, message.channelId))
-    .where(isNotNull(apps.eventsUrl));
+    .where(or(isNotNull(apps.eventsUrl), eq(apps.socketMode, true)));
   for (const { app, workspaceId } of subscribers) {
-    for (const type of eventsFor(message, app.botUserId, app.eventTypes)) {
+    const types = eventsFor(message, app.botUserId, app.eventTypes);
+    if (app.socketMode) {
+      if (types.length > 0) await deliverSlackEvents(deps, app, message, types, log);
+      continue;
+    }
+    for (const type of types) {
       const payload: EventCallback = {
         type: "event_callback",
         eventId: randomUUID(),
@@ -67,7 +74,7 @@ export async function dispatchMessageEvents(db: Db, policy: OutboundPolicy, mess
         workspaceId,
         event: { type, channelId: message.channelId, message },
       };
-      void deliver(app.eventsUrl!, app.signingSecret, payload, policy, log);
+      void deliver(app.eventsUrl!, app.signingSecret, payload, deps.outbound, log);
     }
   }
 }

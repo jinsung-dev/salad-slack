@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router";
 import {
   appEventTypes,
   appScopes,
+  slackId,
   type App,
   type AppEventType,
   type AppScope,
@@ -36,7 +37,7 @@ export function WorkspaceAdmin({ me }: { me: User }) {
       <Members me={me} />
       {canManage && <Invites />}
       {canManage && <Webhooks />}
-      {canManage && <Apps />}
+      {canManage && <Apps me={me} />}
       {canManage && <WorkspaceSettings />}
     </div>
   );
@@ -323,7 +324,7 @@ const EVENT_LABEL: Record<AppEventType, string> = {
   app_mention: "app_mention — 봇을 멘션한 메시지",
 };
 
-function Apps() {
+function Apps({ me }: { me: User }) {
   const qc = useQueryClient();
   const workspace = useCurrentWorkspace();
   const list = useQuery({ queryKey: ["apps", workspace.id], queryFn: () => api.apps(workspace.id), staleTime: 0 });
@@ -368,14 +369,22 @@ function Apps() {
           <CopyField value={issued.token} label="봇 토큰" />
         </div>
       )}
+      {issued?.appToken && (
+        <div className="created">
+          <p>
+            <strong>{issued.name}</strong>의 앱 토큰(Socket Mode 연결용)입니다. 지금만 볼 수 있습니다.
+          </p>
+          <CopyField value={issued.appToken} label="앱 토큰" />
+        </div>
+      )}
       {(list.data ?? []).map((a) => (
-        <AppCard key={a.id} app={a} onIssued={setIssued} onChanged={() => void refresh()} />
+        <AppCard key={a.id} app={a} me={me} onIssued={setIssued} onChanged={() => void refresh()} />
       ))}
     </section>
   );
 }
 
-function AppCard({ app, onIssued, onChanged }: { app: App; onIssued: (a: App) => void; onChanged: () => void }) {
+function AppCard({ app, me, onIssued, onChanged }: { app: App; me: User; onIssued: (a: App) => void; onChanged: () => void }) {
   const workspace = useCurrentWorkspace();
   const [message, setMessage] = useState<string | null>(null);
 
@@ -390,6 +399,7 @@ function AppCard({ app, onIssued, onChanged }: { app: App; onIssued: (a: App) =>
         eventsUrl: url("eventsUrl"),
         eventTypes: appEventTypes.filter((t) => form.get(`event:${t}`) === "on"),
         interactivityUrl: url("interactivityUrl"),
+        socketMode: form.get("socketMode") === "on",
       });
       setMessage("저장했습니다.");
       onChanged();
@@ -405,7 +415,7 @@ function AppCard({ app, onIssued, onChanged }: { app: App; onIssued: (a: App) =>
     try {
       await api.addCommand(workspace.id, app.id, {
         command: String(form.get("command") ?? "").replace(/^\//, "").trim(),
-        url: String(form.get("url") ?? "").trim(),
+        url: String(form.get("url") ?? "").trim() || null,
         description: String(form.get("description") ?? "").trim(),
         usageHint: String(form.get("usageHint") ?? "").trim(),
       });
@@ -413,7 +423,13 @@ function AppCard({ app, onIssued, onChanged }: { app: App; onIssued: (a: App) =>
       setMessage(null);
       onChanged();
     } catch (err) {
-      setMessage(err instanceof ApiError && err.code === "command_taken" ? "이미 있는 명령입니다." : "명령을 추가하지 못했습니다.");
+      setMessage(
+        err instanceof ApiError && err.code === "command_taken"
+          ? "이미 있는 명령입니다."
+          : err instanceof ApiError && err.code === "command_url_required"
+            ? "명령 URL을 입력해 주세요 (Socket Mode 앱은 비워 둘 수 있습니다)."
+            : "명령을 추가하지 못했습니다.",
+      );
     }
   };
 
@@ -435,6 +451,10 @@ function AppCard({ app, onIssued, onChanged }: { app: App; onIssued: (a: App) =>
             </label>
           ))}
         </fieldset>
+        <label className="check">
+          <input type="checkbox" name="socketMode" defaultChecked={app.socketMode} /> Socket Mode (Slack 호환): 앱이 웹소켓으로 연결해 이벤트·명령·버튼을 받습니다. 공개 URL이
+          필요 없고, 켜면 아래 URL들은 쓰지 않습니다.
+        </label>
         <label>
           이벤트 URL
           <input name="eventsUrl" type="url" defaultValue={app.eventsUrl ?? ""} placeholder="https://example.com/chatter/events" />
@@ -466,6 +486,19 @@ function AppCard({ app, onIssued, onChanged }: { app: App; onIssued: (a: App) =>
           >
             토큰 재발급
           </button>
+          {app.socketMode && (
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                if (!app.hasAppToken || confirm("앱 토큰을 다시 발급할까요? 지금 연결은 끊기고 이전 토큰은 쓸 수 없게 됩니다.")) {
+                  void api.issueSocketToken(workspace.id, app.id).then((a) => (onIssued(a), onChanged()));
+                }
+              }}
+            >
+              {app.hasAppToken ? "앱 토큰 재발급" : "앱 토큰 발급"}
+            </button>
+          )}
           <button
             type="button"
             className="link danger"
@@ -478,6 +511,28 @@ function AppCard({ app, onIssued, onChanged }: { app: App; onIssued: (a: App) =>
         </div>
         {message && <p className="muted">{message}</p>}
       </form>
+
+      <details className="slack-ids">
+        <summary>Slack 호환 정보 (Bolt 앱, Hermes 연결용)</summary>
+        <dl>
+          <dt>Slack API 주소</dt>
+          <dd>
+            <CopyField value={`${window.location.origin}/api/slack/`} label="Slack API 주소" />
+          </dd>
+          <dt>팀 ID</dt>
+          <dd>
+            <code>{slackId("T", workspace.id)}</code>
+          </dd>
+          <dt>봇 사용자 ID</dt>
+          <dd>
+            <code>{slackId("U", app.botUserId)}</code>
+          </dd>
+          <dt>내 사용자 ID</dt>
+          <dd>
+            <code>{slackId("U", me.id)}</code>
+          </dd>
+        </dl>
+      </details>
 
       <h3>슬래시 커맨드</h3>
       <table className="admin-table">
@@ -499,7 +554,13 @@ function AppCard({ app, onIssued, onChanged }: { app: App; onIssued: (a: App) =>
       </table>
       <form onSubmit={addCommand} className="row wrap">
         <input name="command" placeholder="/명령 (예: deploy)" aria-label="명령 이름" required />
-        <input name="url" type="url" placeholder="https://example.com/chatter/commands" aria-label="명령 URL" required />
+        <input
+          name="url"
+          type="url"
+          placeholder={app.socketMode ? "URL (Socket Mode면 비워 두세요)" : "https://example.com/chatter/commands"}
+          aria-label="명령 URL"
+          required={!app.socketMode}
+        />
         <input name="description" placeholder="설명" aria-label="명령 설명" maxLength={100} />
         <input name="usageHint" placeholder="사용법 (예: [환경])" aria-label="명령 사용법" maxLength={100} />
         <button type="submit">명령 추가</button>

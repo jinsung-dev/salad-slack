@@ -398,7 +398,7 @@ test("apps: bot in a channel, slash command with buttons, ephemeral replies", as
   await admin.getByLabel("앱 이름").fill("배포봇");
   await admin.getByRole("button", { name: "앱 만들기" }).click();
   const token = await admin.getByLabel("봇 토큰").inputValue();
-  expect(token).toMatch(/^xcb-/);
+  expect(token).toMatch(/^xoxb-/);
   await admin.locator(".app-card summary").filter({ hasText: "배포봇" }).click();
   await admin.getByLabel(/chat:write —/).check();
   await admin.getByLabel("버튼 클릭 URL").fill(`${appUrl}/actions`);

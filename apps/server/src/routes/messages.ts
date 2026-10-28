@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { and, desc, eq, isNull, lt, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, sql } from "drizzle-orm";
 import {
   channelParams,
   editMessageInput,
@@ -10,12 +10,12 @@ import {
   type MessagePage,
 } from "@chatter/shared";
 import type { AppDeps } from "../app";
-import { files, mentions, messages, reactions } from "../db/schema";
-import { mentionTargets, sendMessage } from "../messageService";
-import { channelAccess, loadMessage, loadMessages, memberIds } from "../queries";
+import { messages } from "../db/schema";
+import { deleteMessage, editMessage, sendMessage, setReaction } from "../messageService";
+import { channelAccess, loadMessage, loadMessages } from "../queries";
 
 export async function messageRoutes(app: FastifyInstance, deps: AppDeps) {
-  const { db, hub, fileStore } = deps;
+  const { db } = deps;
   app.addHook("preHandler", async (req, reply) => {
     if (!req.user) return reply.code(401).send({ error: "unauthenticated" });
   });
@@ -29,11 +29,6 @@ export async function messageRoutes(app: FastifyInstance, deps: AppDeps) {
       return null;
     }
     return { row, ...access };
-  };
-
-  const publishUpdated = async (id: number, members: string[]) => {
-    const message = await loadMessage(db, id);
-    if (message) hub.publish({ users: members }, { type: "message.updated", message });
   };
 
   app.post("/api/channels/:id/messages", async (req, reply) => {
@@ -88,27 +83,7 @@ export async function messageRoutes(app: FastifyInstance, deps: AppDeps) {
     if (!found) return;
     if (found.row.userId !== me) return reply.code(403).send({ error: "not_author" });
     if (found.row.deletedAt) return reply.code(409).send({ error: "message_deleted" });
-
-    const members = await memberIds(db, found.row.channelId);
-    const mention = mentionTargets(text, members, me);
-    await db.transaction(async (tx) => {
-      await tx.update(messages).set({ text, editedAt: sql`now()`, mentionsChannel: mention.channel }).where(eq(messages.id, id));
-      // Keep read state for people still mentioned; drop the rest.
-      await tx
-        .delete(mentions)
-        .where(
-          and(eq(mentions.messageId, id), mention.targets.length > 0 ? notInArray(mentions.userId, mention.targets) : undefined),
-        );
-      if (mention.targets.length > 0) {
-        await tx
-          .insert(mentions)
-          .values(mention.targets.map((userId) => ({ messageId: id, userId, channelId: found.row.channelId })))
-          .onConflictDoNothing();
-      }
-    });
-    const message = (await loadMessage(db, id))!;
-    hub.publish({ users: members }, { type: "message.updated", message });
-    return message;
+    return editMessage(deps, found.row, { text });
   });
 
   app.delete("/api/messages/:id", async (req, reply) => {
@@ -117,40 +92,7 @@ export async function messageRoutes(app: FastifyInstance, deps: AppDeps) {
     const found = await visibleMessage(id, me, reply);
     if (!found) return;
     if (found.row.userId !== me) return reply.code(403).send({ error: "not_author" });
-    if (found.row.deletedAt) return reply.code(204).send();
-
-    const parentId = found.row.parentId;
-    let removedFiles: string[] = [];
-    const parentGone = await db.transaction(async (tx) => {
-      await tx.update(messages).set({ deletedAt: sql`now()`, text: "", mentionsChannel: false }).where(eq(messages.id, id));
-      await tx.delete(mentions).where(eq(mentions.messageId, id));
-      await tx.delete(reactions).where(eq(reactions.messageId, id));
-      removedFiles = (await tx.delete(files).where(eq(files.messageId, id)).returning({ key: files.storageKey })).map((f) => f.key);
-      if (parentId === null) return false;
-      const [parent] = await tx
-        .update(messages)
-        .set({
-          replyCount: sql`${messages.replyCount} - 1`,
-          lastReplyAt: sql`(select max(created_at) from messages where parent_id = ${parentId} and deleted_at is null)`,
-        })
-        .where(eq(messages.id, parentId))
-        .returning({ replyCount: messages.replyCount, deletedAt: messages.deletedAt });
-      return parent!.replyCount === 0 && parent!.deletedAt !== null;
-    });
-    await fileStore.remove(removedFiles);
-
-    const members = await memberIds(db, found.row.channelId);
-    const channelId = found.row.channelId;
-    if (parentId === null && found.row.replyCount > 0) {
-      // Stays as a placeholder so its thread remains reachable.
-      await publishUpdated(id, members);
-    } else {
-      hub.publish({ users: members }, { type: "message.deleted", channelId, id, parentId });
-    }
-    if (parentId !== null) {
-      if (parentGone) hub.publish({ users: members }, { type: "message.deleted", channelId, id: parentId, parentId: null });
-      else await publishUpdated(parentId, members);
-    }
+    await deleteMessage(deps, found.row);
     return reply.code(204).send();
   });
 
@@ -161,19 +103,7 @@ export async function messageRoutes(app: FastifyInstance, deps: AppDeps) {
     if (!found) return;
     if (!found.isMember) return reply.code(403).send({ error: "not_a_member" });
     if (found.row.deletedAt) return reply.code(409).send({ error: "message_deleted" });
-
-    if (add) await db.insert(reactions).values({ messageId: id, userId: me, emoji }).onConflictDoNothing();
-    else
-      await db
-        .delete(reactions)
-        .where(and(eq(reactions.messageId, id), eq(reactions.userId, me), eq(reactions.emoji, emoji)));
-
-    const { reactions: list } = (await loadMessage(db, id))!;
-    hub.publish(
-      { users: await memberIds(db, found.row.channelId) },
-      { type: "reaction.updated", channelId: found.row.channelId, messageId: id, reactions: list },
-    );
-    return list;
+    return setReaction(deps, found.row, me, emoji, add);
   };
   app.put("/api/messages/:id/reactions/:emoji", react(true));
   app.delete("/api/messages/:id/reactions/:emoji", react(false));

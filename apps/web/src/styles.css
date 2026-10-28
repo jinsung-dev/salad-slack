@@ -296,4 +296,7 @@ pre.example { background: var(--code-bg); border-radius: 6px; padding: 8px; font
 .app-card h3 { font-size: 14px; margin: 14px 0 4px; }
 .app-card fieldset { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; display: flex; flex-direction: column; gap: 4px; }
 .app-card legend { font-size: 13px; padding: 0 4px; }
+.slack-ids { margin-top: 10px; }
+.slack-ids dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; align-items: center; margin: 8px 0 0; }
+.slack-ids dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .check { flex-direction: row !important; align-items: center; gap: 6px !important; }

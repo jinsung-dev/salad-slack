@@ -4,14 +4,14 @@ import { and, eq } from "drizzle-orm";
 import { appParams, createAppInput, createCommandInput, updateAppInput, workspaceParams, type App, type CommandInfo } from "@chatter/shared";
 import { z } from "zod";
 import type { AppDeps } from "../app";
-import { appView, hashToken, newBotToken, newSigningSecret } from "../apps";
+import { appView, hashToken, newAppToken, newBotToken, newSigningSecret } from "../apps";
 import { apps, slashCommands, users } from "../db/schema";
 import { addWorkspaceMember, removeWorkspaceMember, requireRole } from "../workspaces";
 
 const commandParams = appParams.extend({ commandId: z.uuid() });
 
 // Admins create and configure apps; everyone may list the commands they can run.
-export async function appRoutes(app: FastifyInstance, { db, hub }: AppDeps) {
+export async function appRoutes(app: FastifyInstance, { db, hub, socketMode }: AppDeps) {
   app.addHook("preHandler", async (req, reply) => {
     if (!req.user) return reply.code(401).send({ error: "unauthenticated" });
   });
@@ -37,7 +37,7 @@ export async function appRoutes(app: FastifyInstance, { db, hub }: AppDeps) {
       return row!;
     });
     await addWorkspaceMember(db, hub, workspaceId, created.botUserId, "member");
-    return reply.code(201).send(await appView(db, created, token));
+    return reply.code(201).send(await appView(db, created, { token }));
   });
 
   app.get("/api/workspaces/:workspaceId/apps", async (req, reply): Promise<App[] | undefined> => {
@@ -55,10 +55,18 @@ export async function appRoutes(app: FastifyInstance, { db, hub }: AppDeps) {
     if (!row) return reply.code(404).send({ error: "app_not_found" });
     const [updated] = await db
       .update(apps)
-      .set({ name: input.name, scopes: [...new Set(input.scopes)], eventsUrl: input.eventsUrl, eventTypes: [...new Set(input.eventTypes)], interactivityUrl: input.interactivityUrl })
+      .set({
+        name: input.name,
+        scopes: [...new Set(input.scopes)],
+        eventsUrl: input.eventsUrl,
+        eventTypes: [...new Set(input.eventTypes)],
+        interactivityUrl: input.interactivityUrl,
+        socketMode: input.socketMode,
+      })
       .where(eq(apps.id, appId))
       .returning();
     await db.update(users).set({ displayName: input.name }).where(eq(users.id, row.botUserId));
+    if (row.socketMode && !input.socketMode) await socketMode.disconnect(appId);
     return appView(db, updated!);
   });
 
@@ -69,7 +77,18 @@ export async function appRoutes(app: FastifyInstance, { db, hub }: AppDeps) {
     if (!(await ownApp(workspaceId, appId))) return reply.code(404).send({ error: "app_not_found" });
     const token = newBotToken();
     const [updated] = await db.update(apps).set({ tokenHash: hashToken(token) }).where(eq(apps.id, appId)).returning();
-    return appView(db, updated!, token);
+    return appView(db, updated!, { token });
+  });
+
+  // The app-level token opens Socket Mode connections; reissuing closes the open ones.
+  app.post("/api/workspaces/:workspaceId/apps/:appId/app-token", async (req, reply) => {
+    const { workspaceId, appId } = appParams.parse(req.params);
+    if (!(await requireRole(db, reply, workspaceId, req.user!.id, "admin"))) return;
+    if (!(await ownApp(workspaceId, appId))) return reply.code(404).send({ error: "app_not_found" });
+    const appToken = newAppToken();
+    const [updated] = await db.update(apps).set({ appTokenHash: hashToken(appToken) }).where(eq(apps.id, appId)).returning();
+    await socketMode.disconnect(appId);
+    return appView(db, updated!, { appToken });
   });
 
   // Deleting an app ends its token, commands and events; its bot leaves the workspace but keeps authorship of past messages.
@@ -79,6 +98,7 @@ export async function appRoutes(app: FastifyInstance, { db, hub }: AppDeps) {
     const row = await ownApp(workspaceId, appId);
     if (!row) return reply.code(404).send({ error: "app_not_found" });
     await db.delete(apps).where(eq(apps.id, appId));
+    await socketMode.disconnect(appId);
     await removeWorkspaceMember(db, hub, workspaceId, row.botUserId);
     return reply.code(204).send();
   });
@@ -87,7 +107,10 @@ export async function appRoutes(app: FastifyInstance, { db, hub }: AppDeps) {
     const { workspaceId, appId } = appParams.parse(req.params);
     const input = createCommandInput.parse(req.body);
     if (!(await requireRole(db, reply, workspaceId, req.user!.id, "admin"))) return;
-    if (!(await ownApp(workspaceId, appId))) return reply.code(404).send({ error: "app_not_found" });
+    const owner = await ownApp(workspaceId, appId);
+    if (!owner) return reply.code(404).send({ error: "app_not_found" });
+    // Socket Mode apps receive commands over their connection; others need a URL.
+    if (!input.url && !owner.socketMode) return reply.code(400).send({ error: "command_url_required" });
     const [created] = await db
       .insert(slashCommands)
       .values({ appId, workspaceId, ...input })
